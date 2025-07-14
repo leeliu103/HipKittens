@@ -2,7 +2,7 @@
 GPU_TARGET=CDNA3
 
 TARGET=tk_kernel
-SRC=simple_kernel.cpp
+SRC=simple-kernel.cpp
 
 # HIP variables
 ROCM_INSTALL_DIR := $(ROCM_PATH)
@@ -27,7 +27,7 @@ ILDLIBS   :=
 CXXFLAGS ?= -Wall -Wextra
 CXXFLAGS := -w
 
-ICXXFLAGS += $(CXXFLAGS) --save-temps
+ICXXFLAGS += $(CXXFLAGS)
 ICPPFLAGS += $(CPPFLAGS)
 ILDFLAGS  += $(LDFLAGS)
 ILDLIBS   += $(LDLIBS)

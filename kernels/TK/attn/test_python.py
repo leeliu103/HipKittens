@@ -2,7 +2,9 @@ import torch
 import tk_kernel
 import random
 import time
+import math
 from torch.nn.functional import scaled_dot_product_attention
+from aiter.ops.triton.mha import flash_attn_func
 
 profiling = True
 
@@ -90,14 +92,39 @@ flops_ref = flops(B, N, H, D, causal)
 
 
 if profiling:
+    # # Reference matmul using PyTorch
+    # for _ in range(num_warmup):
+    #     out_ref = scaled_dot_product_attention(q, k, v, is_causal=causal)
+    # timings_ref = []
+    # for _ in range(num_iters):
+    #     torch.cuda.synchronize()
+    #     start_event.record()
+    #     out_ref = scaled_dot_product_attention(q, k, v, is_causal=causal)
+    #     end_event.record()
+    #     torch.cuda.synchronize()
+    #     elapsed_time = start_event.elapsed_time(end_event)
+    #     timings_ref.append(elapsed_time)
+    # if profiling:
+    #     print(f"{out_ref.dtype=}")
+    #     avg_time_ref = sum(timings_ref) / len(timings_ref)
+    #     eff_ref = efficiency(flops_ref, avg_time_ref)
+    #     print(f"PyTorch reference average execution time: {avg_time_ref:.4f} ms")
+    #     print(f"PyTorch reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N=} {D=} {causal=}")
     # Reference matmul using PyTorch
+    q_bnhd = q.permute(0, 2, 1, 3).contiguous()  # -> (B, N, H, D)
+    k_bnhd = k.permute(0, 2, 1, 3).contiguous()
+    v_bnhd = v.permute(0, 2, 1, 3).contiguous()
     for _ in range(num_warmup):
-        out_ref = scaled_dot_product_attention(q, k, v, is_causal=causal)
+        out_ref = flash_attn_func(
+            q_bnhd, k_bnhd, v_bnhd
+        )
     timings_ref = []
     for _ in range(num_iters):
         torch.cuda.synchronize()
         start_event.record()
-        out_ref = scaled_dot_product_attention(q, k, v, is_causal=causal)
+        out_ref = flash_attn_func(
+            q_bnhd, k_bnhd, v_bnhd
+        )
         end_event.record()
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event)
@@ -106,9 +133,8 @@ if profiling:
         print(f"{out_ref.dtype=}")
         avg_time_ref = sum(timings_ref) / len(timings_ref)
         eff_ref = efficiency(flops_ref, avg_time_ref)
-        print(f"PyTorch reference average execution time: {avg_time_ref:.4f} ms")
-        print(f"PyTorch reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N=} {D=} {causal=}")
-
+        print(f"AITER (AMD) reference average execution time: {avg_time_ref:.4f} ms")
+        print(f"AITER (AMD) reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N=} {D=} {causal=}")
 
 # Kernel matmul
 out = torch.zeros(B, H, N, D, dtype=dtype, device='cuda', requires_grad=True)
@@ -134,7 +160,7 @@ if profiling:
 # Compare against reference
 if profiling:
     out_float = out.float()
-    out_ref_float = out_ref.float()
+    out_ref_float = out_ref.permute(0, 2, 1, 3).contiguous().float()
     diff = (out_float - out_ref_float).abs()
     max_error = diff.max().item()
     mean_error = diff.mean().item()

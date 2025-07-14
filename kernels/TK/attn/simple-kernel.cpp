@@ -124,21 +124,23 @@ __global__ void attend_ker(const attn_globals<D> g) {
         mul(norm_vec, max_vec, norm_vec);
         add(norm_vec_new, norm_vec_last, norm_vec);
 
-        // 14.    O_i = diag(l_i_new)^-1 @ (diag(l_i) * exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j) (16x64)
-        mul_row(o_reg, o_reg, norm_vec_last);
+        // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
+        mul_row(o_reg, o_reg, max_vec_last);
         copy(att_block_bf16, att_block);
         swap_layout(att_block_mma, att_block_bf16);
         mma_AB(o_reg_next, att_block_mma, v_reg, o_reg_next);
         mul_row(o_reg_next, o_reg_next, max_vec);
         add(o_reg, o_reg, o_reg_next);
-        div_row(o_reg, o_reg, norm_vec_new);
 
         // 15.    l_i = l_i_new, m_i = m_i_new
         copy(max_vec_last, max_vec_new);
         copy(norm_vec_last, norm_vec_new);
     }
 
-    // 16. Store O_i back to global memory.
+    // 16. O_i = diag(l_i)^-1 @ O_i
+    div_row(o_reg, o_reg, norm_vec_last);
+
+    // 17. Store O_i back to global memory.
     store(g.Og, o_reg, {batch_idx, head_idx, tile_idx, 0});
 
 }

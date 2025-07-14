@@ -1,3 +1,5 @@
+### For Attention, We use AMD's optimized AI/HPC library AITER as our baseline: https://github.com/ROCm/aiter
+
 ```
 root@gpu-10:/workdir/AMD-benchmarking-harness/kernels/TK/attn# make
 /opt/rocm/bin/hipcc simple_kernel.cpp -DKITTENS_CDNA3 --offload-arch=gfx942 -std=c++20 -w --save-temps -I/workdir/AMD-benchmarking-harness/ThunderKittens-HIP/include -I/workdir/AMD-benchmarking-harness/ThunderKittens-HIP/prototype -I/opt/conda/envs/py_3.12/include/python3.12 -I/opt/conda/envs/py_3.12/lib/python3.12/site-packages/pybind11/include -L/opt/conda/envs/py_3.12/lib/python3.12/config-3.12-x86_64-linux-gnu -L/opt/conda/envs/py_3.12/lib  -lpthread -ldl  -lutil -lm  -shared -fPIC -Rpass-analysis=kernel-resource-usage -I/workdir/AMD-benchmarking-harness/ThunderKittens-HIP/include -I/opt/rocm/include/hip  \
@@ -13,19 +15,17 @@ remark: simple_kernel.cpp:53:0:     SGPRs Spill: 0 [-Rpass-analysis=kernel-resou
 remark: simple_kernel.cpp:53:0:     VGPRs Spill: 0 [-Rpass-analysis=kernel-resource-usage]
 remark: simple_kernel.cpp:53:0:     LDS Size [bytes/block]: 1024 [-Rpass-analysis=kernel-resource-usage]
 root@gpu-10:/workdir/AMD-benchmarking-harness/kernels/TK/attn# python test_python.py
-src: simple_kernel.cpp
+src: simple-kernel.cpp
 Warning: tk_kernel.cpython-313-x86_64-linux-gnu.so not found at /workdir/AMD-benchmarking-harness/kernels/TK/attn/tk_kernel.cpython-313-x86_64-linux-gnu.so, skipping.
-/workdir/AMD-benchmarking-harness/kernels/TK/attn/test_python.py:97: UserWarning: Using AOTriton backend for Flash Attention forward... (Triggered internally at /var/lib/jenkins/pytorch/aten/src/ATen/native/transformers/hip/flash_attn/flash_api.h:267.)
-  out_ref = scaled_dot_product_attention(q, k, v, is_causal=causal)
 out_ref.dtype=torch.bfloat16
-PyTorch reference average execution time: 0.3226 ms
-PyTorch reference performance: 212.99 TFLOPS for B=16 H=16 N=1024 D=64 causal=False
+AITER (AMD) reference average execution time: 0.2869 ms
+AITER (AMD) reference performance: 239.51 TFLOPS for B=16 H=16 N=1024 D=64 causal=False
 out.dtype=torch.bfloat16
-Average execution time: 1.0563 ms
-Performance: 65.06 TFLOPS for 1024x1024 matrix multiplication.
+Average execution time: 0.7610 ms
+Performance: 90.30 TFLOPS for 1024x1024 matrix multiplication.
 
 Max error between kernel and reference: 0.00390625
 Max error: 0.00390625
-Mean error: 0.00018589969840832055
+Mean error: 0.0001859374751802534
 Number of large errors (>0.1): 0
 ```
