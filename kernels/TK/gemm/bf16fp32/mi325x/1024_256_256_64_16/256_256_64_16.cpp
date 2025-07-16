@@ -74,6 +74,11 @@ void micro_tk(const micro_globals g) {
     const int warp_col = warp_id % 4;
 
     const int num_tiles = K / K_STEP;
+    
+    // Small register buffers for pipelining
+    constexpr int BUFFER_SIZE = 128;
+    float4 a_buffer_next[BUFFER_SIZE];
+    float4 b_buffer_next[BUFFER_SIZE];
 
     // Load first tile into shared memory
     G::load(As, g.a, {0, 0, row, 0});
@@ -84,18 +89,15 @@ void micro_tk(const micro_globals g) {
         __builtin_amdgcn_s_barrier();
     }
 
-    for (int tile = 0; tile < num_tiles - 1; ++tile) {
+    load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_A, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
+        a_buffer_next, BUFFER_SIZE, g.a, {0, 0, row, 1}, As, 0, 1);
+    load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_B, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
+        b_buffer_next, BUFFER_SIZE, g.b, {0, 0, col, 1}, Bs, 0, 1);
 
-        // Small register buffers for pipelining
-        constexpr int BUFFER_SIZE = 128;
-        float4 a_buffer_next[BUFFER_SIZE];
-        float4 b_buffer_next[BUFFER_SIZE];
+    for (int tile = 0; tile < num_tiles - 1; ++tile) {
+        const bool loading = tile + 2 < num_tiles;
 
         // Cluster 0
-        load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_A, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
-            a_buffer_next, BUFFER_SIZE, g.a, {0, 0, row, tile + 1}, As, 0, 1);
-        load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_B, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
-            b_buffer_next, BUFFER_SIZE, g.b, {0, 0, col, tile + 1}, Bs, 0, 1);
         asm volatile("s_waitcnt lgkmcnt(0)");
         load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 0}));
         load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 0}));
@@ -129,6 +131,12 @@ void micro_tk(const micro_globals g) {
         mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
         mma_ABt(C_accum[1], tiles[5], tiles[3], C_accum[1]);
         __builtin_amdgcn_s_setprio(0);
+        if (loading) {
+            load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_A, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
+                a_buffer_next, BUFFER_SIZE, g.a, {0, 0, row, tile + 2}, As, 0, 1);
+            load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_B, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
+                b_buffer_next, BUFFER_SIZE, g.b, {0, 0, col, tile + 2}, Bs, 0, 1);
+        }
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
         
