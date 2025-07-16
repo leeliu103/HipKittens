@@ -9,10 +9,7 @@ constexpr int REG_BLOCK        = BLOCK_SIZE / 4;
 constexpr int DOT_SLICE        = 16;
 
 #define NUM_WARPS 8
-#define NUM_PRODUCER_WARPS 4
-#define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS + kittens::WARP_THREADS * NUM_PRODUCER_WARPS)
-#define NUM_CONSUMER_THREADS (kittens::WARP_THREADS * NUM_WARPS)
-#define NUM_PRODUCER_THREADS (kittens::WARP_THREADS * NUM_PRODUCER_WARPS)
+#define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
 #define M 8192
 #define K 8192
@@ -41,12 +38,15 @@ __global__ __launch_bounds__(NUM_THREADS, 2)
 void micro_tk(const micro_globals g) {
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
-    st_bf<BLOCK_SIZE, K_STEP> (&As) = al.allocate<st_bf<BLOCK_SIZE, K_STEP>>();
-    st_bf<BLOCK_SIZE, K_STEP> (&Bs) = al.allocate<st_bf<BLOCK_SIZE, K_STEP>>();
+    st_bf<BLOCK_SIZE, K_STEP> (&As)[2] = al.allocate<st_bf<BLOCK_SIZE, K_STEP>, 2>();
+    st_bf<BLOCK_SIZE, K_STEP> (&Bs)[2] = al.allocate<st_bf<BLOCK_SIZE, K_STEP>, 2>();
+
+    rt_bf<REG_BLOCK, DOT_SLICE> tiles[6];
+    rt_fl<REG_BLOCK, REG_BLOCK, ducks::rt_layout::col> C_accum[2];
+    for (int i = 0; i < 2; i++) { zero(C_accum[i]); }
 
     // Original WGID.
     int wgid = (blockIdx.y * gridDim.x) + blockIdx.x;
-
     const int NUM_WGS = gridDim.x * gridDim.y;
     const int NUM_XCDS = 8;
     const int CUS_PER_XCD = 32;
@@ -54,7 +54,7 @@ void micro_tk(const micro_globals g) {
     // Swizzle chiplet so that wgids are in the same XCD.
     wgid = (wgid % NUM_XCDS) * (NUM_WGS / NUM_XCDS) + (wgid / NUM_XCDS);
     // Swizzle for better L2 within the same XCD.
-    const int WGM = 4;
+    const int WGM = 8;
     const int num_pid_m = ceil_div(M, BLOCK_SIZE);
     const int num_pid_n = ceil_div(N, BLOCK_SIZE);
     int num_wgid_in_group = WGM * num_pid_n;
@@ -67,119 +67,42 @@ void micro_tk(const micro_globals g) {
     const int row = pid_m; // blockIdx.x
     const int col = pid_n; // blockIdx.y
 
-
-    rt_fl<REG_BLOCK, REG_BLOCK, ducks::rt_layout::col> C_accum[2];
-    for (int i = 0; i < 2; i++) { zero(C_accum[i]); }
-
+    // Info
     const int warp_id = kittens::warpid();
-    const int is_consumer = (warp_id < NUM_WARPS);
-    const int is_producer = (warp_id >= NUM_WARPS);
     const int warp_row = warp_id / 4;
     const int warp_col = warp_id % 4;
-
     const int num_tiles = K / K_STEP;
 
+    int tic = 0;
+    int toc = 1;
+
     // Load first tile into shared memory
-    if (is_consumer){ 
-        G::load(As, g.a, {0, 0, row, 0});
-        G::load(Bs, g.b, {0, 0, col, 0});
-    }
+    G::load(As[0], g.a, {0, 0, row, 0});
+    G::load(Bs[0], g.b, {0, 0, col, 0});
     __builtin_amdgcn_s_barrier();
 
-    if (warp_row == 1 && is_consumer) {
+    if (warp_row == 1) {
         __builtin_amdgcn_s_barrier();
     }
 
-    for (int tile = 0; tile < num_tiles - 1; ++tile) {
+    for (int tile = 0; tile < num_tiles - 1; ++tile, tic^=1, toc^=1) {
+
+        // Small register buffers for pipelining
+        constexpr int BUFFER_SIZE = 128;
+        float4 a_buffer_next[BUFFER_SIZE];
+        float4 b_buffer_next[BUFFER_SIZE];
 
         // Cluster 0
-        if (is_producer) {
-            // Small register buffers for pipelining
-            constexpr int BUFFER_SIZE = 128;
-            float4 a_buffer_next[BUFFER_SIZE];
-            float4 b_buffer_next[BUFFER_SIZE];
-
-            load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_A, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_PRODUCER_THREADS>(
-                a_buffer_next, BUFFER_SIZE, g.a, {0, 0, row, tile + 1}, As, 0, 1);
-            load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_B, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_PRODUCER_THREADS>(
-                b_buffer_next, BUFFER_SIZE, g.b, {0, 0, col, tile + 1}, Bs, 0, 1);
-            __builtin_amdgcn_s_barrier();
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            store_registers_to_shared<st_bf<BLOCK_SIZE, K_STEP>, NUM_PRODUCER_THREADS>(a_buffer_next, As);
-            store_registers_to_shared<st_bf<BLOCK_SIZE, K_STEP>, NUM_PRODUCER_THREADS>(b_buffer_next, Bs);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-        } else {
-            rt_bf<REG_BLOCK, DOT_SLICE> tiles[6];
-
-            load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 0}));
-            load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 0}));
-            load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 0}));
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            // Cluster 1
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_setprio(1);
-            mma_ABt(C_accum[0], tiles[1], tiles[0], C_accum[0]);
-            mma_ABt(C_accum[1], tiles[2], tiles[0], C_accum[1]);
-            __builtin_amdgcn_s_setprio(0);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            // Cluster 2
-            load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 1}));
-            load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 1}));
-            load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 1}));
-            load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 2}));
-            load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 2}));
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            // Cluster 3
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_setprio(1);
-            mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
-            mma_ABt(C_accum[1], tiles[5], tiles[3], C_accum[1]);
-            __builtin_amdgcn_s_setprio(0);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            // Cluster 4
-            load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 2}));
-            load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 3}));
-            load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 3}));
-            load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 3}));
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            // Cluster 5
-            __builtin_amdgcn_s_setprio(1);
-            mma_ABt(C_accum[0], tiles[1], tiles[0], C_accum[0]);
-            mma_ABt(C_accum[1], tiles[2], tiles[0], C_accum[1]);
-            mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
-            mma_ABt(C_accum[1], tiles[5], tiles[3], C_accum[1]);
-            __builtin_amdgcn_s_setprio(0);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-        }
-    }
-
-    // Epilogue
-    // Cluster 0
-    if (is_consumer) { 
-        rt_bf<REG_BLOCK, DOT_SLICE> tiles[6];
-
-        __builtin_amdgcn_sched_barrier(0);
-        load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 0}));
-        load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 0}));
-        load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 0}));
-        asm volatile("s_waitcnt lgkmcnt(0)");
+        load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_A, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
+            a_buffer_next, BUFFER_SIZE, g.a, {0, 0, row, tile + 1}, As[toc], 0, 1);
+        load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 0}));
+        load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 0}));
+        load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 0}));
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
-        
 
         // Cluster 1
+        asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_s_setprio(1);
         mma_ABt(C_accum[0], tiles[1], tiles[0], C_accum[0]);
         mma_ABt(C_accum[1], tiles[2], tiles[0], C_accum[1]);
@@ -188,14 +111,16 @@ void micro_tk(const micro_globals g) {
         __builtin_amdgcn_sched_barrier(0);
 
         // Cluster 2
-        load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 1}));
-        load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 1}));
-        load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 1}));
-        asm volatile("s_waitcnt lgkmcnt(0)");
+        load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 1}));
+        load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 1}));
+        load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 1}));
+        load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 2}));
+        load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 2}));
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
         // Cluster 3
+        asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_s_setprio(1);
         mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
         mma_ABt(C_accum[1], tiles[5], tiles[3], C_accum[1]);
@@ -204,13 +129,12 @@ void micro_tk(const micro_globals g) {
         __builtin_amdgcn_sched_barrier(0);
 
         // Cluster 4
-        load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 2}));
-        load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 2}));
-        load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 2}));
-        load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs, {warp_col, 3}));
-        load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row, 3}));
-        load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As, {warp_row + 2, 3}));
-        asm volatile("s_waitcnt lgkmcnt(0)");
+        load_global_to_registers<2, false, st_bf<BLOCK_SIZE, K_STEP>, _gl_B, coord<st_bf<BLOCK_SIZE, K_STEP>>, NUM_THREADS>(
+            b_buffer_next, BUFFER_SIZE, g.b, {0, 0, col, tile + 1}, Bs[toc], 0, 1);
+        load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 2}));
+        load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 3}));
+        load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 3}));
+        load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 3}));
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
@@ -222,6 +146,13 @@ void micro_tk(const micro_globals g) {
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
+        // Cluster 6
+        // asm volatile("s_waitcnt lgkmcnt(0)");
+        store_registers_to_shared<st_bf<BLOCK_SIZE, K_STEP>, NUM_THREADS>(a_buffer_next, As[toc]);
+        store_registers_to_shared<st_bf<BLOCK_SIZE, K_STEP>, NUM_THREADS>(b_buffer_next, Bs[toc]);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
+
         // Cluster 7
         __builtin_amdgcn_s_setprio(1);
         mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
@@ -229,14 +160,77 @@ void micro_tk(const micro_globals g) {
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
-
-        if (warp_row == 0) {
-            __builtin_amdgcn_s_barrier();
-        }
-
-        store(g.c, C_accum[0], {0, 0, row * 4 + warp_row, col * 4 + warp_col});
-        store(g.c, C_accum[1], {0, 0, row * 4 + warp_row + 2, col * 4 + warp_col});
+        
     }
+
+    // Epilogue
+    // Cluster 0
+    __builtin_amdgcn_sched_barrier(0);
+    load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 0}));
+    load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 0}));
+    load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 0}));
+    asm volatile("s_waitcnt lgkmcnt(0)");
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+    
+
+    // Cluster 1
+    __builtin_amdgcn_s_setprio(1);
+    mma_ABt(C_accum[0], tiles[1], tiles[0], C_accum[0]);
+    mma_ABt(C_accum[1], tiles[2], tiles[0], C_accum[1]);
+    __builtin_amdgcn_s_setprio(0);
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    // Cluster 2
+    load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 1}));
+    load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 1}));
+    load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 1}));
+    asm volatile("s_waitcnt lgkmcnt(0)");
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    // Cluster 3
+    __builtin_amdgcn_s_setprio(1);
+    mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
+    mma_ABt(C_accum[1], tiles[5], tiles[3], C_accum[1]);
+    __builtin_amdgcn_s_setprio(0);
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    // Cluster 4
+    load_async_shared_to_register(tiles[0], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 2}));
+    load_async_shared_to_register(tiles[1], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 2}));
+    load_async_shared_to_register(tiles[2], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 2}));
+    load_async_shared_to_register(tiles[3], subtile_inplace<REG_BLOCK, DOT_SLICE>(Bs[tic], {warp_col, 3}));
+    load_async_shared_to_register(tiles[4], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row, 3}));
+    load_async_shared_to_register(tiles[5], subtile_inplace<REG_BLOCK, DOT_SLICE>(As[tic], {warp_row + 2, 3}));
+    asm volatile("s_waitcnt lgkmcnt(0)");
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    // Cluster 5
+    __builtin_amdgcn_s_setprio(1);
+    mma_ABt(C_accum[0], tiles[1], tiles[0], C_accum[0]);
+    mma_ABt(C_accum[1], tiles[2], tiles[0], C_accum[1]);
+    __builtin_amdgcn_s_setprio(0);
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    // Cluster 7
+    __builtin_amdgcn_s_setprio(1);
+    mma_ABt(C_accum[0], tiles[4], tiles[3], C_accum[0]);
+    mma_ABt(C_accum[1], tiles[5], tiles[3], C_accum[1]);
+    __builtin_amdgcn_s_setprio(0);
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    if (warp_row == 0) {
+        __builtin_amdgcn_s_barrier();
+    }
+
+    store(g.c, C_accum[0], {0, 0, row * 4 + warp_row, col * 4 + warp_col});
+    store(g.c, C_accum[1], {0, 0, row * 4 + warp_row + 2, col * 4 + warp_col});
 }
 
 void dispatch_micro(micro_globals g) {

@@ -1,8 +1,8 @@
 # Compiler
-GPU_TARGET=CDNA3
+GPU_TARGET=CDNA4
 
 TARGET=tk_kernel
-SRC=simple-kernel.cpp
+SRC=kernel.cpp
 
 # HIP variables
 ROCM_INSTALL_DIR := $(ROCM_PATH)
@@ -15,6 +15,8 @@ ifeq ($(GPU_TARGET),CDNA2)
 HIPFLAGS+= -DKITTENS_CDNA2 --offload-arch=gfx90a
 else ifeq ($(GPU_TARGET),CDNA3)
 HIPFLAGS+= -DKITTENS_CDNA3 --offload-arch=gfx942
+else ifeq ($(GPU_TARGET),CDNA4)
+HIPFLAGS+= -DKITTENS_CDNA4 --offload-arch=gfx950
 endif
 
 # Common variables and flags
@@ -32,7 +34,9 @@ ICPPFLAGS += $(CPPFLAGS)
 ILDFLAGS  += $(LDFLAGS)
 ILDLIBS   += $(LDLIBS)
 
-ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) $(shell python3-config --ldflags) -shared -fPIC -Rpass-analysis=kernel-resource-usage
+PY_LDFLAGS := $(shell python3-config --ldflags | sed 's/-lcrypt//g')
+ICXXFLAGS += $(PY_LDFLAGS)
+ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage
 
 
 # Default target

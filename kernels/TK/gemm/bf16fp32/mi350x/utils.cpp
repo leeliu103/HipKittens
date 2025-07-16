@@ -22,6 +22,7 @@ __device__ inline void store_shared_vec_new(uint32_t lds_off, float2 val) {
     );
 }
 
+
 enum class coherency {
 	cache_all = 0,
 	cache_global = 1,
@@ -84,7 +85,95 @@ __device__ inline void load_global_to_registers(
     }
 }
 
+// Add the external intrinsic declaration
 
+using as3_uint32_ptr = uint32_t __attribute__((address_space(3)))*;
+using index_t = int;
+using int32x4_t = int32_t __attribute__((ext_vector_type(4)));
+
+extern "C" __device__ void 
+llvm_amdgcn_raw_buffer_load_lds(int32x4_t rsrc,
+                                as3_uint32_ptr lds_ptr,
+                                index_t size,
+                                index_t voffset,
+                                index_t soffset,
+                                index_t offset,
+                                index_t aux) __asm("llvm.amdgcn.raw.buffer.load.lds");
+
+// Direct global-to-shared load using buffer load to LDS
+// Correct approach: respect the split memory layout using supported load sizes
+template<int axis, bool assume_aligned,
+         ducks::st::all ST, ducks::gl::all GL,
+         ducks::coord::tile COORD = coord<ST>,
+         int N_THREADS = WARP_THREADS, int NUM_WARPS = 1>
+__device__ inline void load_global_to_shared_direct(
+    const GL& src, const COORD& idx, ST& dst)
+{
+    using T = typename ST::dtype;
+    const int row_stride = src.template stride<axis>();
+    constexpr int elem_per_memcpy = sizeof(float4)/sizeof(typename ST::dtype);
+    constexpr int elem_per_half_memcpy = sizeof(float2)/sizeof(typename ST::dtype);
+    constexpr int memcpy_per_row = ST::cols / elem_per_memcpy;
+
+    coord<> unit_coord = idx.template unit_coord<axis, 3>();
+    typename GL::dtype *src_ptr = (typename GL::dtype*)&src[unit_coord];
+
+    uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
+
+    // Set up buffer resource
+    const int total_bytes = row_stride * ST::rows * sizeof(T);
+    int32x4_t srsrc = make_srsrc(src_ptr, total_bytes);
+
+    // Only thread 0 does the loading to avoid work distribution issues
+    if (threadIdx.x == 0) {
+        for (int row = 0; row < ST::rows; row++) {
+            for (int col_group = 0; col_group < memcpy_per_row; col_group++) {
+                int col = col_group * elem_per_memcpy;
+                
+                // Calculate global memory byte offset
+                int global_offset = (row * row_stride + col) * sizeof(T);
+                
+                // Load first half (8 bytes) to dst.idx({row, col})
+                uint32_t lds_offset_1 = dst.idx(dst_ptr, {row, col});
+                as3_uint32_ptr lds_ptr_1 = reinterpret_cast<as3_uint32_ptr>(
+                    reinterpret_cast<uintptr_t>(&dst.data[0]) + lds_offset_1
+                );
+                
+                // Use 4-byte + 4-byte for first 8 bytes
+                llvm_amdgcn_raw_buffer_load_lds(
+                    srsrc, lds_ptr_1, 4, global_offset, 0, 0,
+                    static_cast<index_t>(coherency::cache_all)
+                );
+                llvm_amdgcn_raw_buffer_load_lds(
+                    srsrc, reinterpret_cast<as3_uint32_ptr>(reinterpret_cast<uintptr_t>(lds_ptr_1) + 4), 
+                    4, global_offset + 4, 0, 0,
+                    static_cast<index_t>(coherency::cache_all)
+                );
+                
+                // Load second half (8 bytes) to dst.idx({row, col + elem_per_half_memcpy})
+                uint32_t lds_offset_2 = dst.idx(dst_ptr, {row, col + elem_per_half_memcpy});
+                as3_uint32_ptr lds_ptr_2 = reinterpret_cast<as3_uint32_ptr>(
+                    reinterpret_cast<uintptr_t>(&dst.data[0]) + lds_offset_2
+                );
+                
+                // Use 4-byte + 4-byte for second 8 bytes
+                llvm_amdgcn_raw_buffer_load_lds(
+                    srsrc, lds_ptr_2, 4, global_offset + 8, 0, 0,
+                    static_cast<index_t>(coherency::cache_all)
+                );
+                llvm_amdgcn_raw_buffer_load_lds(
+                    srsrc, reinterpret_cast<as3_uint32_ptr>(reinterpret_cast<uintptr_t>(lds_ptr_2) + 4), 
+                    4, global_offset + 12, 0, 0,
+                    static_cast<index_t>(coherency::cache_all)
+                );
+            }
+        }
+    }
+
+    asm volatile("s_waitcnt vmcnt(0)"); 
+    asm volatile("s_waitcnt lgkmcnt(0)");
+    __syncthreads();
+}
 
 
 // Store from registers to shared memory (preserving the batched pattern)

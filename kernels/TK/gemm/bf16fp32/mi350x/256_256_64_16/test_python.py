@@ -60,7 +60,7 @@ if profiling:
     ################ END LOGGING STUFF ###############
 
 if profiling:
-    num_warmup = 2000
+    num_warmup = 1000
     num_iters = 100
 else:
     num_warmup = 1

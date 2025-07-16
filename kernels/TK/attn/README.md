@@ -1,4 +1,11 @@
-### For Attention, We use AMD's optimized AI/HPC library AITER as our baseline: https://github.com/ROCm/aiter
+### 
+
+For Attention, We use AMD's optimized AI/HPC library AITER as our baseline: https://github.com/ROCm/aiter
+```
+git clone --recursive https://github.com/ROCm/aiter.git
+cd aiter
+python3 setup.py develop
+```
 
 ```
 root@gpu-10:/workdir/AMD-benchmarking-harness/kernels/TK/attn# make
