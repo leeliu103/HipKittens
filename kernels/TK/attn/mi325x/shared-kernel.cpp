@@ -14,7 +14,8 @@ constexpr int BLOCK_SIZE = 128; // block size
 constexpr int BLOCK_SLICE = BLOCK_SIZE / NUM_WARPS;
 constexpr int N_STEP = 128;
 constexpr int N_TILES = ATTN_N / N_STEP;
-constexpr int N_SLICES = N_STEP / BLOCK_SLICE;
+constexpr int PIPELINE_DEPTH = 4;
+constexpr int N_SLICE = N_STEP / PIPELINE_DEPTH;
 
 using namespace kittens;
 using G = kittens::group<NUM_WARPS>;
@@ -45,8 +46,9 @@ Each warp is responsible for a 16x64 tile of the output. i.e. Given an output of
 16. Store O_i back to global memory.
 */
 
-template<int D, typename T=bf16, typename L=row_l> using qkvo_tile = rt<T, BLOCK_SLICE, D, L>;
-template<int D, typename T=float, typename L=row_l> using attn_tile = rt<T, BLOCK_SLICE, BLOCK_SLICE, L>;
+template<int D, typename T=bf16, typename L=row_l> using kv_tile = rt<T, N_SLICE, D, L>;
+template<int D, typename T=bf16, typename L=row_l> using qo_tile = rt<T, BLOCK_SLICE, D, L>;
+template<int D, typename T=float, typename L=row_l> using attn_tile = rt<T, BLOCK_SLICE, N_SLICE, L>;
 
 template<int D> using global_layout = gl<bf16, -1, -1, -1, D>; // B, N, H, specified at runtime, D known at compile time for this kernel
 template<int D> struct attn_globals { 
@@ -71,10 +73,11 @@ __global__ void attend_ker(const attn_globals<D> g) {
     const float scale_factor = 1.0f / sqrt(D);
 
     // Initialize all of the register tiles.
-    qkvo_tile<D, bf16> q_reg, k_reg[2]; // Q and K are both row layout, as we use mma_ABt.
-    qkvo_tile<D, bf16, col_l> v_reg[2]; // V is column layout, as we use mma_AB.
-    qkvo_tile<D, float, col_l> o_reg; // Output tile.
-    qkvo_tile<D, float, col_l> o_reg_next; // attention tile, in float, for the mma_AB.
+    qo_tile<D, bf16> q_reg; // Q, K, V are all row layout, as we use mma_ABt.
+    kv_tile<D, bf16> k_reg;
+    kv_tile<D, bf16, col_l> v_reg; // V is column layout, as we use mma_AB.
+    qo_tile<D, float, col_l> o_reg; // Output tile.
+    qo_tile<D, float, col_l> o_reg_next; // attention tile, in float, for the mma_AB.
     attn_tile<D, float, col_l> att_block; // attention tile, in float. (We want to use float wherever possible.)
     attn_tile<D, bf16, col_l> att_block_bf16; // bf16 attention tile for the second mma_AB. We cast right before that op.
     attn_tile<D, bf16> att_block_mma; // bf16 attention tile in row layout for the second mma_AB.
@@ -110,428 +113,60 @@ __global__ void attend_ker(const attn_globals<D> g) {
         load_global_to_registers<2, false, st_bf<N_STEP, ATTN_D>, global_layout<ATTN_D>, coord<st_bf<N_STEP, ATTN_D>>, NUM_THREADS>(
             v_buffer_next, BUFFER_SIZE, g.Vg, {batch_idx, head_idx, tile + 1, 0}, Vs, 0, 1);
 
-        // Cluster 0 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {0, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {0, 0}));
-        }
-        // Cluster 1 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 2 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {1, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {1, 0}));
-        }
-        // Cluster 3 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 4 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {2, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {2, 0}));
-        }
-        // Cluster 5 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 6 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {3, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {3, 0}));
-        }
-        // Cluster 7 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 8 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {4, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {4, 0}));
-        }
-        // Cluster 9 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 10 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {5, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {5, 0}));
-        }
-        // Cluster 11 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 12 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {6, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {6, 0}));
-        }
-        // Cluster 13 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
-        }
-
-        // Cluster 14 - Memory
-        {
-            // zero out the accumulators
-            zero(att_block);
-            zero(o_reg_next);
-
-            // 7.     Load K_j, V_j from shared memory to registers (16x64)
-            load_async_shared_to_register(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {7, 0}));
-            load_async_shared_to_register(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {7, 0}));
-        }
-        // Cluster 15 - Compute
-        {
-            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-            mma_ABt(att_block, q_reg, k_reg[0], att_block);
-            mul(att_block, att_block, scale_factor);
-
-            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-            row_max(max_vec, att_block);
-
-            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-            sub_row(att_block, att_block, max_vec);
-            exp(att_block, att_block);
-
-            // 11.            l'_ij = row_sum(p'_ij) (16x1)
-            row_sum(norm_vec, att_block);
-
-            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-            max(max_vec_new, max_vec_last, max_vec);
-
-            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-            sub(max_vec_last, max_vec_last, max_vec_new);
-            exp(max_vec_last, max_vec_last);
-
-            sub(max_vec, max_vec, max_vec_new);
-            exp(max_vec, max_vec);
-
-            mul(norm_vec_last, max_vec_last, norm_vec_last);
-            mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
-
-            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-            mul_row(o_reg, o_reg, max_vec_last);
-            copy(att_block_bf16, att_block);
-            swap_layout(att_block_mma, att_block_bf16);
-            mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-            mul_row(o_reg_next, o_reg_next, max_vec);
-            add(o_reg, o_reg, o_reg_next);
-
-            // 15.    l_i = l_i_new, m_i = m_i_new
-            copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
+        for (int stage = 0; stage < PIPELINE_DEPTH; stage++) {
+            // Cluster 0 - Memory
+            {
+                // zero out the accumulators
+                zero(att_block);
+                zero(o_reg_next);
+
+                // 7.     Load K_j, V_j from shared memory to registers (16x64)
+                load_async_shared_to_register(k_reg, subtile_inplace<N_SLICE, ATTN_D>(Ks, {stage, 0}));
+                load_async_shared_to_register(v_reg, subtile_inplace<N_SLICE, ATTN_D>(Vs, {stage, 0}));
+            }
+            // Cluster 1 - Compute
+            {
+                // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
+                __syncthreads();
+                mma_ABt(att_block, q_reg, k_reg, att_block);
+                mul(att_block, att_block, scale_factor);
+
+                // 9.     Compute m'_ij = row_max(S_ij) (16x1)
+                row_max(max_vec, att_block);
+
+                // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
+                sub_row(att_block, att_block, max_vec);
+                exp(att_block, att_block);
+
+                // 11.            l'_ij = row_sum(p'_ij) (16x1)
+                row_sum(norm_vec, att_block);
+
+                // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
+                max(max_vec_new, max_vec_last, max_vec);
+
+                // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
+                sub(max_vec_last, max_vec_last, max_vec_new);
+                exp(max_vec_last, max_vec_last);
+
+                sub(max_vec, max_vec, max_vec_new);
+                exp(max_vec, max_vec);
+
+                mul(norm_vec_last, max_vec_last, norm_vec_last);
+                mul(norm_vec, max_vec, norm_vec);
+                add(norm_vec_new, norm_vec_last, norm_vec);
+
+                // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
+                mul_row(o_reg, o_reg, max_vec_last);
+                copy(att_block_bf16, att_block);
+                swap_layout(att_block_mma, att_block_bf16);
+                mma_AB(o_reg_next, att_block_mma, v_reg, o_reg_next);
+                mul_row(o_reg_next, o_reg_next, max_vec);
+                add(o_reg, o_reg, o_reg_next);
+
+                // 15.    l_i = l_i_new, m_i = m_i_new
+                copy(max_vec_last, max_vec_new);
+                copy(norm_vec_last, norm_vec_new);
+            }
         }
 
         store_registers_to_shared<st_bf<N_STEP, ATTN_D>, NUM_THREADS>(
@@ -541,56 +176,62 @@ __global__ void attend_ker(const attn_globals<D> g) {
         __syncthreads();
     }
 
-    // // Epilogue
-    // for (int slice = 0; slice < N_SLICES; slice++) {
-    //     // zero out the accumulators
-    //     zero(att_block);
-    //     zero(o_reg_next);
+    // Epilogue
+    for (int stage = 0; stage < PIPELINE_DEPTH; stage++) {
+        // Cluster 0 - Memory
+        {
+            // zero out the accumulators
+            zero(att_block);
+            zero(o_reg_next);
 
-    //     // 7.     Load K_j, V_j from shared memory to registers (16x64)
-    //     load(k_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Ks, {slice, 0}));
-    //     load(v_reg[0], subtile_inplace<BLOCK_SLICE, ATTN_D>(Vs, {slice, 0}));
+            // 7.     Load K_j, V_j from shared memory to registers (16x64)
+            load_async_shared_to_register(k_reg, subtile_inplace<N_SLICE, ATTN_D>(Ks, {stage, 0}));
+            load_async_shared_to_register(v_reg, subtile_inplace<N_SLICE, ATTN_D>(Vs, {stage, 0}));
+        }
+        // Cluster 1 - Compute
+        {
+            // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
+            __syncthreads();
+            mma_ABt(att_block, q_reg, k_reg, att_block);
+            mul(att_block, att_block, scale_factor);
 
-    //     // 8.     Compute S_ij = Q_i @ K_j.T (16x16)
-    //     mma_ABt(att_block, q_reg, k_reg[0], att_block);
-    //     mul(att_block, att_block, scale_factor);
+            // 9.     Compute m'_ij = row_max(S_ij) (16x1)
+            row_max(max_vec, att_block);
 
-    //     // 9.     Compute m'_ij = row_max(S_ij) (16x1)
-    //     row_max(max_vec, att_block);
+            // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
+            sub_row(att_block, att_block, max_vec);
+            exp(att_block, att_block);
 
-    //     // 10.            p'_ij = exp(S_ij - m'_ij) (16x16)
-    //     sub_row(att_block, att_block, max_vec);
-    //     exp(att_block, att_block);
+            // 11.            l'_ij = row_sum(p'_ij) (16x1)
+            row_sum(norm_vec, att_block);
 
-    //     // 11.            l'_ij = row_sum(p'_ij) (16x1)
-    //     row_sum(norm_vec, att_block);
+            // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
+            max(max_vec_new, max_vec_last, max_vec);
 
-    //     // 12.    Compute m_i_new = max(m_i, m'_ij) (16x1)
-    //     max(max_vec_new, max_vec_last, max_vec);
+            // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
+            sub(max_vec_last, max_vec_last, max_vec_new);
+            exp(max_vec_last, max_vec_last);
 
-    //     // 13.            l_i_new = exp(m_i - m_i_new) * l_i + exp(m'_ij - m_i_new) * l'_ij (16x1)
-    //     sub(max_vec_last, max_vec_last, max_vec_new);
-    //     exp(max_vec_last, max_vec_last);
+            sub(max_vec, max_vec, max_vec_new);
+            exp(max_vec, max_vec);
 
-    //     sub(max_vec, max_vec, max_vec_new);
-    //     exp(max_vec, max_vec);
+            mul(norm_vec_last, max_vec_last, norm_vec_last);
+            mul(norm_vec, max_vec, norm_vec);
+            add(norm_vec_new, norm_vec_last, norm_vec);
 
-    //     mul(norm_vec_last, max_vec_last, norm_vec_last);
-    //     mul(norm_vec, max_vec, norm_vec);
-    //     add(norm_vec_new, norm_vec_last, norm_vec);
+            // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
+            mul_row(o_reg, o_reg, max_vec_last);
+            copy(att_block_bf16, att_block);
+            swap_layout(att_block_mma, att_block_bf16);
+            mma_AB(o_reg_next, att_block_mma, v_reg, o_reg_next);
+            mul_row(o_reg_next, o_reg_next, max_vec);
+            add(o_reg, o_reg, o_reg_next);
 
-    //     // 14.    O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
-    //     mul_row(o_reg, o_reg, max_vec_last);
-    //     copy(att_block_bf16, att_block);
-    //     swap_layout(att_block_mma, att_block_bf16);
-    //     mma_AB(o_reg_next, att_block_mma, v_reg[0], o_reg_next);
-    //     mul_row(o_reg_next, o_reg_next, max_vec);
-    //     add(o_reg, o_reg, o_reg_next);
-
-    //     // 15.    l_i = l_i_new, m_i = m_i_new
-    //     copy(max_vec_last, max_vec_new);
-    //     copy(norm_vec_last, norm_vec_new);
-    // }
+            // 15.    l_i = l_i_new, m_i = m_i_new
+            copy(max_vec_last, max_vec_new);
+            copy(norm_vec_last, norm_vec_new);
+        }
+    }
 
     // 16. O_i = diag(l_i)^-1 @ O_i
     div_row(o_reg, o_reg, norm_vec_last);
