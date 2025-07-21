@@ -261,7 +261,7 @@ __device__ inline void load_global_to_shared_direct(
 
     uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
     int thread_id = threadIdx.x % N_THREADS;
-    int warp_id = kittens::warpid();
+    int warp_id = thread_id >> 6;
 
     #pragma unroll
     for (int i = 0; i < memcpy_per_tile; i++) {
@@ -285,6 +285,85 @@ __device__ inline void load_global_to_shared_direct(
             lds_ptr,
             bytes_per_thread, // 16 bytes
             offset_in_global,
+            0, 
+            0, // instruction offset
+            static_cast<index_t>(coherency::cache_all)); // cache coherency
+    }
+}
+
+// Direct global-to-shared load using buffer load to LDS
+template<int axis, bool assume_aligned,
+         ducks::st::all ST, ducks::gl::all GL,
+         ducks::coord::tile COORD = coord<ST>,
+         int N_THREADS = WARP_THREADS, int NUM_WARPS = 1>
+__device__ inline void prefill_swizzled_offsets(
+    const GL& src, const COORD& idx, ST& dst, uint32_t* swizzled_offsets)
+{
+    using T = typename ST::dtype;
+    constexpr int bytes_per_thread = 16;
+    constexpr int bytes_per_memcpy = 16 * N_THREADS;
+    constexpr int memcpy_per_tile = ST::rows * ST::cols * sizeof(T) / bytes_per_memcpy;
+    
+    constexpr int elem_per_thread = bytes_per_thread / sizeof(T);  // e.g., 8 for bf16, 4 for fp32
+    constexpr int threads_per_row = ST::cols / elem_per_thread; 
+
+    const int row_stride = src.template stride<axis>();
+
+    uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
+    int thread_id = threadIdx.x % N_THREADS;
+    int warp_id = thread_id >> 6;
+
+    #pragma unroll
+    for (int i = 0; i < memcpy_per_tile; i++) {
+        const int row_in_lds = (i * N_THREADS + thread_id) / threads_per_row;
+        const int col_in_lds = ((i * N_THREADS + thread_id) % threads_per_row) * elem_per_thread;
+        const int addr_in_lds = dst.idx(dst_ptr, {row_in_lds, col_in_lds});
+
+        const int offset_in_lds = addr_in_lds - dst_ptr;
+        const int swizzled_row_in_lds = (offset_in_lds / sizeof(T)) / ST::cols;
+        const int swizzled_col_in_lds = (offset_in_lds / sizeof(T)) % ST::cols;
+
+        const int offset_in_global = (swizzled_row_in_lds * row_stride + swizzled_col_in_lds) * sizeof(T);
+
+        swizzled_offsets[i] = offset_in_global;
+    }
+}
+
+template<int axis, bool assume_aligned,
+         ducks::st::all ST, ducks::gl::all GL,
+         ducks::coord::tile COORD = coord<ST>,
+         int N_THREADS = WARP_THREADS, int NUM_WARPS = 1>
+__device__ inline void load_global_to_shared_direct_with_swizzled_offsets(
+    const GL& src, const COORD& idx, ST& dst, uint32_t* swizzled_offsets)
+{
+    using T = typename ST::dtype;
+    constexpr int bytes_per_thread = 16;
+    constexpr int bytes_per_memcpy = bytes_per_thread * N_THREADS;
+    constexpr int memcpy_per_tile = ST::rows * ST::cols * sizeof(T) / bytes_per_memcpy;
+    
+    constexpr int elem_per_thread = bytes_per_thread / sizeof(T);  // e.g., 8 for bf16, 4 for fp32
+    constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS;
+
+    const int row_stride = src.template stride<axis>();
+    coord<> unit_coord = idx.template unit_coord<axis, 3>();
+    T* global_ptr = (T*)&src[unit_coord];
+    i32x4 srsrc = make_srsrc(global_ptr, row_stride * ST::rows * sizeof(T));
+
+    const int thread_id = threadIdx.x % N_THREADS;
+    const int warp_id = thread_id >> 6;
+
+    #pragma unroll
+    for (int i = 0; i < memcpy_per_tile; i++) {
+        const T* lds_base = &dst.data[0];
+        const T* lds_elem_ptr = lds_base + (i * N_THREADS * elem_per_thread) + (warp_id * elem_per_warp);
+        uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
+        as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
+
+        llvm_amdgcn_raw_buffer_load_lds(
+            srsrc, // buffer resource
+            lds_ptr,
+            bytes_per_thread, // 16 bytes
+            swizzled_offsets[i],
             0, 
             0, // instruction offset
             static_cast<index_t>(coherency::cache_all)); // cache coherency
@@ -336,7 +415,6 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
         row_offset = 8*(laneid/16);
         col_offset = laneid%16;
     }
-    const int my_const = ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U);
 
     #pragma unroll
     for(int j = 0; j < dst.width; j++) {
@@ -359,7 +437,7 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
                 asm volatile(
                     "ds_read_b128 %0, %1 offset:%2\n"
                     : "=v"(*reinterpret_cast<float4*>(&dst.tiles[i][j].data[0]))
-                    : "v"(addr), "i"(i * my_const)
+                    : "v"(addr), "i"(i * ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U))
                     : "memory"
                 );
 
@@ -373,7 +451,6 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
         }
     }
 }
-
 
 template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL,
          ducks::coord::tile COORD = coord<ST>, int N_THREADS = WARP_THREADS>
