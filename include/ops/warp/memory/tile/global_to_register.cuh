@@ -43,75 +43,87 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
 
     #ifdef KITTENS_CDNA4
     int row_offset = laneid%32, col_offset = 8*(laneid/32);
+    int REPEAT = 2;
     #else
     int row_offset = laneid%16, col_offset = 4*(laneid/16);
+    int REPEAT = 1;
     #endif
     
 
     uint32_t buffer_size = src.batch() * src.depth() * src.rows() * src.cols() * sizeof(U);
-
     std::uintptr_t as_int = reinterpret_cast<std::uintptr_t>(src_ptr);
     std::uint64_t  as_u64 = static_cast<std::uint64_t>(as_int);    // widen if host is 32-bit
     buffer_resource br = make_buffer_resource(as_u64, buffer_size, 0x00020000);
 
     #pragma unroll
-    for(int i = 0; i < dst.height; i++) {
-        int row = dst.tile_size_row*i + row_offset;
+    for (int z = 0; z < REPEAT; z++) {
+
         #pragma unroll
-        for(int j = 0; j < dst.width; j++) {
-            int col = dst.tile_size_col*j + col_offset;
-            U2* tmp;
-            if constexpr (sizeof(U2) == 4) { // bf16_2
+        for(int i = 0; i < dst.height; i++) {
+            int row = dst.tile_size_row*i + row_offset;
+
+
+            #pragma unroll
+            for(int j = 0; j < dst.width; j++) {
+                int col = dst.tile_size_col*j + col_offset + z*16;
+
+                U2* tmp;
+                if constexpr (sizeof(U2) == 4) { // bf16_2
+
+                    #ifdef KITTENS_CDNA4
+                    float4 loaded = std::bit_cast<float4>(llvm_amdgcn_raw_buffer_load_b128(
+                        std::bit_cast<i32x4>(br),
+                        (row*row_stride + col) * sizeof(U),
+                        0,
+                        0
+                    ));
+                    tmp = reinterpret_cast<U2*>(&loaded);
+                    #else
+                    float2 loaded = std::bit_cast<float2>(llvm_amdgcn_raw_buffer_load_b64(
+                        std::bit_cast<i32x4>(br),
+                        (row*row_stride + col) * sizeof(U),
+                        0,
+                        0
+                    ));
+                    #endif
+
+                }
+                else { // float2
+
+                    #ifdef KITTENS_CDNA4
+                    static_assert(0, "float2 is not supported on CDNA4");
+                    #else
+                    float4 loaded = std::bit_cast<float4>(llvm_amdgcn_raw_buffer_load_b128(
+                        std::bit_cast<i32x4>(br),
+                        (row*row_stride + col) * sizeof(U),
+                        0,
+                        0
+                    ));
+                    tmp = reinterpret_cast<U2*>(&loaded);
+                    #endif
+
+                }
 
                 #ifdef KITTENS_CDNA4
-                float4 loaded = std::bit_cast<float4>(llvm_amdgcn_raw_buffer_load_b128(
-                    std::bit_cast<i32x4>(br),
-                    (row*row_stride + col) * sizeof(U),
-                    0,
-                    0
-                ));
-                tmp = reinterpret_cast<U2*>(&loaded);
+                #pragma unroll
+                for(int k = 0; k < 4; k++) {
+                    dst.tiles[i][j].data[k + z*4] = base_types::convertor<T2, U2>::convert(tmp[k]);
+                }
                 #else
-                float2 loaded = std::bit_cast<float2>(llvm_amdgcn_raw_buffer_load_b64(
-                    std::bit_cast<i32x4>(br),
-                    (row*row_stride + col) * sizeof(U),
-                    0,
-                    0
-                ));
+                #pragma unroll
+                for(int k = 0; k < 2; k++) {
+                    dst.tiles[i][j].data[k] = base_types::convertor<T2, U2>::convert(tmp[k]);
+                }
                 #endif
 
             }
-            else { // float2
-
-                #ifdef KITTENS_CDNA4
-                static_assert(0, "float2 is not supported on CDNA4");
-                #else
-                float4 loaded = std::bit_cast<float4>(llvm_amdgcn_raw_buffer_load_b128(
-                    std::bit_cast<i32x4>(br),
-                    (row*row_stride + col) * sizeof(U),
-                    0,
-                    0
-                ));
-                tmp = reinterpret_cast<U2*>(&loaded);
-                #endif
-
-            }
-
-            #ifdef KITTENS_CDNA4
-            #pragma unroll
-            for(int k = 0; k < 4; k++) {
-                dst.tiles[i][j].data[k] = base_types::convertor<T2, U2>::convert(tmp[k]);
-            }
-            #else
-            #pragma unroll
-            for(int k = 0; k < 2; k++) {
-                dst.tiles[i][j].data[k] = base_types::convertor<T2, U2>::convert(tmp[k]);
-            }
-            #endif
-
         }
+
     }
+
 }
+
+
 /**
  * @brief Load data from a source array into a column-major layout tile.
  *
@@ -132,35 +144,41 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
 
     #ifdef KITTENS_CDNA4
     const int row_offset = 8*(laneid/32), col_offset = laneid%32;
+    int REPEAT = 2;
     #else:
     const int row_offset = 4*(laneid/16), col_offset = laneid%16;
+    int REPEAT = 1;
     #endif
-    
+
     #pragma unroll
-    for(int i = 0; i < dst.height; i++) {
-        int row = i*dst.tile_size_row + row_offset;
+    for (int z = 0; z < REPEAT; z++) {
 
         #pragma unroll
-        for(int j = 0; j < dst.width; j++) {
-            int col = j*dst.tile_size_col + col_offset;
+        for(int i = 0; i < dst.height; i++) {
+            int row = i*dst.tile_size_row + row_offset + z*16;
 
-            #ifdef KITTENS_CDNA4
-            dst.tiles[i][j].data[0].x = base_types::convertor<T, U>::convert(src_ptr[(row+0)*row_stride + col]);
-            dst.tiles[i][j].data[0].y = base_types::convertor<T, U>::convert(src_ptr[(row+1)*row_stride + col]);
-            dst.tiles[i][j].data[1].x = base_types::convertor<T, U>::convert(src_ptr[(row+2)*row_stride + col]);
-            dst.tiles[i][j].data[1].y = base_types::convertor<T, U>::convert(src_ptr[(row+3)*row_stride + col]);
+            #pragma unroll
+            for(int j = 0; j < dst.width; j++) {
+                int col = j*dst.tile_size_col + col_offset;
 
-            dst.tiles[i][j].data[2].x = base_types::convertor<T, U>::convert(src_ptr[(row+4)*row_stride + col]);
-            dst.tiles[i][j].data[2].y = base_types::convertor<T, U>::convert(src_ptr[(row+5)*row_stride + col]);
-            dst.tiles[i][j].data[3].x = base_types::convertor<T, U>::convert(src_ptr[(row+6)*row_stride + col]);
-            dst.tiles[i][j].data[3].y = base_types::convertor<T, U>::convert(src_ptr[(row+7)*row_stride + col]);
-            #else
-            dst.tiles[i][j].data[0].x = base_types::convertor<T, U>::convert(src_ptr[(row+0)*row_stride + col]);
-            dst.tiles[i][j].data[0].y = base_types::convertor<T, U>::convert(src_ptr[(row+1)*row_stride + col]);
-            dst.tiles[i][j].data[1].x = base_types::convertor<T, U>::convert(src_ptr[(row+2)*row_stride + col]);
-            dst.tiles[i][j].data[1].y = base_types::convertor<T, U>::convert(src_ptr[(row+3)*row_stride + col]);
-            #endif
+                #ifdef KITTENS_CDNA4
+                dst.tiles[i][j].data[0+z*4].x = base_types::convertor<T, U>::convert(src_ptr[(row+0)*row_stride + col]);
+                dst.tiles[i][j].data[0+z*4].y = base_types::convertor<T, U>::convert(src_ptr[(row+1)*row_stride + col]);
+                dst.tiles[i][j].data[1+z*4].x = base_types::convertor<T, U>::convert(src_ptr[(row+2)*row_stride + col]);
+                dst.tiles[i][j].data[1+z*4].y = base_types::convertor<T, U>::convert(src_ptr[(row+3)*row_stride + col]);
 
+                dst.tiles[i][j].data[2+z*4].x = base_types::convertor<T, U>::convert(src_ptr[(row+4)*row_stride + col]);
+                dst.tiles[i][j].data[2+z*4].y = base_types::convertor<T, U>::convert(src_ptr[(row+5)*row_stride + col]);
+                dst.tiles[i][j].data[3+z*4].x = base_types::convertor<T, U>::convert(src_ptr[(row+6)*row_stride + col]);
+                dst.tiles[i][j].data[3+z*4].y = base_types::convertor<T, U>::convert(src_ptr[(row+7)*row_stride + col]);
+                #else
+                dst.tiles[i][j].data[0].x = base_types::convertor<T, U>::convert(src_ptr[(row+0)*row_stride + col]);
+                dst.tiles[i][j].data[0].y = base_types::convertor<T, U>::convert(src_ptr[(row+1)*row_stride + col]);
+                dst.tiles[i][j].data[1].x = base_types::convertor<T, U>::convert(src_ptr[(row+2)*row_stride + col]);
+                dst.tiles[i][j].data[1].y = base_types::convertor<T, U>::convert(src_ptr[(row+3)*row_stride + col]);
+                #endif
+
+            }
         }
     }
 
@@ -223,43 +241,51 @@ __device__ inline static void store(const GL &dst, const RT &src, const COORD &i
 
     #ifdef KITTENS_CDNA4
     int row_offset = laneid%32, col_offset = 8*(laneid/32);
+    int REPEAT = 2;
     #else
     int row_offset = laneid%16, col_offset = 4*(laneid/16);
+    int REPEAT = 1;
     #endif
 
-    #pragma unroll
-    for(int i = 0; i < src.height; i++) {
-        int row = src.tile_size_row*i + row_offset;
-        
-        #pragma unroll
-        for(int j = 0; j < src.width; j++) {
-            int col = src.tile_size_col*j + col_offset;
-            #ifdef KITTENS_CDNA4
-            U2 tmp[4];
-            #pragma unroll
-            for(int k = 0; k < 4; k++) {
-                tmp[k] = base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[k]);
-            }
-            if constexpr (sizeof(U2) == 4) { // bf16_2
-                *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
-            }
-            else { // float2
-                *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
-            }
-            #else
+    for (int z = 0; z < REPEAT; z++) {
 
-            U2 tmp[2];
+        #pragma unroll
+        for(int i = 0; i < src.height; i++) {
+            int row = src.tile_size_row*i + row_offset;
+            
             #pragma unroll
-            for(int k = 0; k < 2; k++) {
-                tmp[k] = base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[k]);
+            for(int j = 0; j < src.width; j++) {
+                int col = src.tile_size_col*j + col_offset + z*16;
+                #ifdef KITTENS_CDNA4
+
+                U2 tmp[4];
+                #pragma unroll
+                for(int k = 0; k < 4; k++) {
+                    tmp[k] = base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[k + z*4]);
+                }
+                if constexpr (sizeof(U2) == 4) { // bf16_2
+                    *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
+                }
+                else { // float2
+                    *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
+                }
+
+
+                #else
+
+                U2 tmp[2];
+                #pragma unroll
+                for(int k = 0; k < 2; k++) {
+                    tmp[k] = base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[k]);
+                }
+                if constexpr (sizeof(U2) == 4) { // bf16_2
+                    *(bytes_8*)&dst_ptr[row*row_stride + col] = *(bytes_8*)tmp;
+                }
+                else { // float2
+                    *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
+                }
+                #endif
             }
-            if constexpr (sizeof(U2) == 4) { // bf16_2
-                *(bytes_8*)&dst_ptr[row*row_stride + col] = *(bytes_8*)tmp;
-            }
-            else { // float2
-                *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
-            }
-            #endif
         }
     }
 }
@@ -284,41 +310,47 @@ __device__ inline static void store(const GL &dst, const RT &src, const COORD &i
 
     #ifdef KITTENS_CDNA4
     const int row_offset = 8*(laneid/32), col_offset = laneid%32;
+    int REPEAT = 2;
     #else
     const int row_offset = 4*(laneid/16), col_offset = laneid%16;
+    int REPEAT = 1;
     #endif
 
     #pragma unroll
-    for(int i = 0; i < src.height; i++) {
-        const int row = i*src.tile_size_row + row_offset;
+    for (int z = 0; z < REPEAT; z++) {
 
-        #ifdef KITTENS_CDNA4
         #pragma unroll
-        for(int j = 0; j < src.width; j++) {
+        for(int i = 0; i < src.height; i++) {
+            const int row = i*src.tile_size_row + row_offset + z*16;
 
-            const int col = j*src.tile_size_col + col_offset;
-            dst_ptr[(row+0)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0].x);
-            dst_ptr[(row+1)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0].y);
-            dst_ptr[(row+2)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1].x);
-            dst_ptr[(row+3)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1].y);
+            #ifdef KITTENS_CDNA4
+            #pragma unroll
+            for(int j = 0; j < src.width; j++) {
 
-            dst_ptr[(row+4)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[2].x);
-            dst_ptr[(row+5)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[2].y);
-            dst_ptr[(row+6)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[3].x);
-            dst_ptr[(row+7)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[3].y);
+                const int col = j*src.tile_size_col + col_offset;
+                dst_ptr[(row+0)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0+z*4].x);
+                dst_ptr[(row+1)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0+z*4].y);
+                dst_ptr[(row+2)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1+z*4].x);
+                dst_ptr[(row+3)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1+z*4].y);
+
+                dst_ptr[(row+4)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[2+z*4].x);
+                dst_ptr[(row+5)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[2+z*4].y);
+                dst_ptr[(row+6)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[3+z*4].x);
+                dst_ptr[(row+7)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[3+z*4].y);
+            }
+
+            #else
+            #pragma unroll
+            for(int j = 0; j < src.width; j++) {
+                const int col = j*src.tile_size_col + col_offset;
+                dst_ptr[(row+0)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0].x);
+                dst_ptr[(row+1)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0].y);
+                dst_ptr[(row+2)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1].x);
+                dst_ptr[(row+3)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1].y);
+            }
+            #endif 
+
         }
-
-        #else
-        #pragma unroll
-        for(int j = 0; j < src.width; j++) {
-            const int col = j*src.tile_size_col + col_offset;
-            dst_ptr[(row+0)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0].x);
-            dst_ptr[(row+1)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[0].y);
-            dst_ptr[(row+2)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1].x);
-            dst_ptr[(row+3)*row_stride + col] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[1].y);
-        }
-        #endif 
-
     }
 }
 
