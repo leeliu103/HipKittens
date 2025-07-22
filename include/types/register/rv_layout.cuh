@@ -20,7 +20,7 @@ namespace rv_layout {
  * @brief A dummy type used to identify an aligned (8x replicated) layout.
  */
 #ifdef KITTENS_CDNA4
-struct align { constexpr static int inner_dim = 4; };
+struct align { constexpr static int inner_dim = 8; };
 #else
 struct align { constexpr static int inner_dim = 2; };
 #endif

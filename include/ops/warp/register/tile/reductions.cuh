@@ -89,82 +89,54 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
 
     #ifdef KITTENS_CDNA4
     const int leader = (laneid() / 32) * 32;
+    const int packed_per_tile = 8;
+    const int max_shift = 16;
     #else
     const int leader = (laneid() / 16) * 16;
+    const int packed_per_tile = 2;
+    const int max_shift = 8;
     #endif
+
+    RT2 accum[packed_per_tile];
 
     #pragma unroll
     for(int i = 0; i < src.height; i++) {
-        RT2 accum_top_rows = src.tiles[i][0].data[0];
-        RT2 accum_bottom_rows = src.tiles[i][0].data[1];
-        #ifdef KITTENS_CDNA4
-        RT2 accum_bottomer_rows = src.tiles[i][0].data[2];
-        RT2 accum_bottomest_rows = src.tiles[i][0].data[3];
-        #endif
+        #pragma unroll
+        for(int k = 0; k < packed_per_tile; k++) {
+            accum[k] = src.tiles[i][0].data[k];
+        }
         #pragma unroll
         for(int j = 1; j < src.width; j++) {
-            accum_top_rows    = op::template op<RT2>(accum_top_rows,    src.tiles[i][j].data[0]);
-            accum_bottom_rows = op::template op<RT2>(accum_bottom_rows, src.tiles[i][j].data[1]);
-            #ifdef KITTENS_CDNA4
-            accum_bottomer_rows = op::template op<RT2>(accum_bottomer_rows, src.tiles[i][j].data[2]);
-            accum_bottomest_rows = op::template op<RT2>(accum_bottomest_rows, src.tiles[i][j].data[3]);
-            #endif
+            #pragma unroll
+            for(int k = 0; k < packed_per_tile; k++) {
+                accum[k] = op::template op<RT2>(accum[k], src.tiles[i][j].data[k]);
+            }
         }
 
-        // Now we need to do a lil shuffle to make everyone happy.
-        #ifdef KITTENS_CDNA4
-        accum_top_rows = op::template op<RT2>(accum_top_rows, packed_shfl_down(MASK_ALL, accum_top_rows, 16));
-        #endif
-        accum_top_rows = op::template op<RT2>(accum_top_rows, packed_shfl_down(MASK_ALL, accum_top_rows, 8));
-        accum_top_rows = op::template op<RT2>(accum_top_rows, packed_shfl_down(MASK_ALL, accum_top_rows, 4));
-        accum_top_rows = op::template op<RT2>(accum_top_rows, packed_shfl_down(MASK_ALL, accum_top_rows, 2));
-        accum_top_rows = op::template op<RT2>(accum_top_rows, packed_shfl_down(MASK_ALL, accum_top_rows, 1));
-
-        #ifdef KITTENS_CDNA4
-        accum_bottom_rows = op::template op<RT2>(accum_bottom_rows, packed_shfl_down(MASK_ALL, accum_bottom_rows, 16));
-        #endif
-        accum_bottom_rows = op::template op<RT2>(accum_bottom_rows, packed_shfl_down(MASK_ALL, accum_bottom_rows, 8));
-        accum_bottom_rows = op::template op<RT2>(accum_bottom_rows, packed_shfl_down(MASK_ALL, accum_bottom_rows, 4));
-        accum_bottom_rows = op::template op<RT2>(accum_bottom_rows, packed_shfl_down(MASK_ALL, accum_bottom_rows, 2));
-        accum_bottom_rows = op::template op<RT2>(accum_bottom_rows, packed_shfl_down(MASK_ALL, accum_bottom_rows, 1));
-
-        #ifdef KITTENS_CDNA4
-        accum_bottomer_rows = op::template op<RT2>(accum_bottomer_rows, packed_shfl_down(MASK_ALL, accum_bottomer_rows, 16));
-        accum_bottomer_rows = op::template op<RT2>(accum_bottomer_rows, packed_shfl_down(MASK_ALL, accum_bottomer_rows, 8));
-        accum_bottomer_rows = op::template op<RT2>(accum_bottomer_rows, packed_shfl_down(MASK_ALL, accum_bottomer_rows, 4));
-        accum_bottomer_rows = op::template op<RT2>(accum_bottomer_rows, packed_shfl_down(MASK_ALL, accum_bottomer_rows, 2));
-        accum_bottomer_rows = op::template op<RT2>(accum_bottomer_rows, packed_shfl_down(MASK_ALL, accum_bottomer_rows, 1));
-
-        accum_bottomest_rows = op::template op<RT2>(accum_bottomest_rows, packed_shfl_down(MASK_ALL, accum_bottomest_rows, 16));
-        accum_bottomest_rows = op::template op<RT2>(accum_bottomest_rows, packed_shfl_down(MASK_ALL, accum_bottomest_rows, 8));
-        accum_bottomest_rows = op::template op<RT2>(accum_bottomest_rows, packed_shfl_down(MASK_ALL, accum_bottomest_rows, 4));
-        accum_bottomest_rows = op::template op<RT2>(accum_bottomest_rows, packed_shfl_down(MASK_ALL, accum_bottomest_rows, 2));
-        accum_bottomest_rows = op::template op<RT2>(accum_bottomest_rows, packed_shfl_down(MASK_ALL, accum_bottomest_rows, 1));
-        #endif
+        #pragma unroll
+        for(int k = 0; k < packed_per_tile; k++) {
+            for (int shift = max_shift; shift > 0; shift /= 2) {
+                accum[k] = op::template op<RT2>(accum[k], packed_shfl_down(MASK_ALL, accum[k], shift));
+            }
+        }
 
         if(reset) {
-            row_accum[i][0] = accum_top_rows;
-            row_accum[i][1] = accum_bottom_rows;
-            #ifdef KITTENS_CDNA4
-            row_accum[i][2] = accum_bottomer_rows;
-            row_accum[i][3] = accum_bottomest_rows;
-            #endif
+            #pragma unroll
+            for(int k = 0; k < packed_per_tile; k++) {
+                row_accum[i][k] = accum[k];
+            }
         }
         else {
-            row_accum[i][0] = op::template op<RT2>(src_accum[i][0], accum_top_rows);
-            row_accum[i][1] = op::template op<RT2>(src_accum[i][1], accum_bottom_rows);
-            #ifdef KITTENS_CDNA4
-            row_accum[i][2] = op::template op<RT2>(src_accum[i][2], accum_bottomer_rows);
-            row_accum[i][3] = op::template op<RT2>(src_accum[i][3], accum_bottomest_rows);
-            #endif
+            #pragma unroll
+            for(int k = 0; k < packed_per_tile; k++) {
+                row_accum[i][k] = op::template op<RT2>(src_accum[i][k], accum[k]);
+            }
         }
 
-        row_accum[i][0] = packed_shfl(MASK_ALL, row_accum[i][0], leader);
-        row_accum[i][1] = packed_shfl(MASK_ALL, row_accum[i][1], leader);
-        #ifdef KITTENS_CDNA4
-        row_accum[i][2] = packed_shfl(MASK_ALL, row_accum[i][2], leader);
-        row_accum[i][3] = packed_shfl(MASK_ALL, row_accum[i][3], leader);
-        #endif
+        #pragma unroll
+        for(int k = 0; k < packed_per_tile; k++) {
+            row_accum[i][k] = packed_shfl(MASK_ALL, row_accum[i][k], leader);
+        }
     }
 }
 
