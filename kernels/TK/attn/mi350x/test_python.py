@@ -24,7 +24,7 @@ torch.set_printoptions(
 B = 16
 H = 32
 N = 4096
-D = 128
+D = 64
 causal = False
 dtype = torch.bfloat16
 q = torch.randn(B, H, N, D, dtype=dtype, device='cuda', requires_grad=True)
@@ -196,8 +196,8 @@ if profiling:
         print(f"Number of large errors (>0.1): {error_count}\n")
 
 
-        print(out[0, 0, 0, :16])
-        print(out_ref_float[0, 0, 0, :16])
+        print(out_float[0:2, 0, 0, :16])
+        print(out_ref_float[0:2, 0, 0, :16])
 
     ############## LOGGING OUTPUTS ####################
 
