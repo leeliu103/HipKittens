@@ -12,10 +12,18 @@ using_aiter = True
 torch.manual_seed(0)
 random.seed(0)
 
+
+torch.set_printoptions(
+    precision=3,        # decimals
+    sci_mode=False,     # True → always scientific
+    linewidth=220,      # characters per line before folding
+    threshold=float("inf")  # print every element, no summarising "..."
+)
+
 # Inputs
 B = 16
 H = 16
-N = 1024
+N = 8192
 D = 64
 causal = False
 dtype = torch.bfloat16
@@ -94,24 +102,24 @@ flops_ref = flops(B, N, H, D, causal)
 
 if profiling:
 
-    # Reference matmul using PyTorch
-    for _ in range(num_warmup):
-        out_ref_pytorch = scaled_dot_product_attention(q, k, v, is_causal=causal)
-    timings_ref = []
-    for _ in range(num_iters):
-        torch.cuda.synchronize()
-        start_event.record()
-        out_ref_pytorch = scaled_dot_product_attention(q, k, v, is_causal=causal)
-        end_event.record()
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event)
-        timings_ref.append(elapsed_time)
-    if profiling:
-        print(f"{out_ref_pytorch.dtype=}")
-        avg_time_ref = sum(timings_ref) / len(timings_ref)
-        eff_ref = efficiency(flops_ref, avg_time_ref)
-        print(f"PyTorch reference average execution time: {avg_time_ref:.4f} ms")
-        print(f"PyTorch reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N=} {D=} {causal=}.\n")
+    # # Reference matmul using PyTorch
+    # for _ in range(num_warmup):
+    #     out_ref_pytorch = scaled_dot_product_attention(q, k, v, is_causal=causal)
+    # timings_ref = []
+    # for _ in range(num_iters):
+    #     torch.cuda.synchronize()
+    #     start_event.record()
+    #     out_ref_pytorch = scaled_dot_product_attention(q, k, v, is_causal=causal)
+    #     end_event.record()
+    #     torch.cuda.synchronize()
+    #     elapsed_time = start_event.elapsed_time(end_event)
+    #     timings_ref.append(elapsed_time)
+    # if profiling:
+    #     print(f"{out_ref_pytorch.dtype=}")
+    #     avg_time_ref = sum(timings_ref) / len(timings_ref)
+    #     eff_ref = efficiency(flops_ref, avg_time_ref)
+    #     print(f"PyTorch reference average execution time: {avg_time_ref:.4f} ms")
+    #     print(f"PyTorch reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N=} {D=} {causal=}.\n")
 
     # Reference matmul using AITER
     if using_aiter:
@@ -164,15 +172,15 @@ if profiling:
 if profiling:
 
     out_float = out.float()
-    out_ref_pytorch_float = out_ref_pytorch.float()
-    diff_pytorch = (out_float - out_ref_pytorch_float).abs()
-    max_error_pytorch = diff_pytorch.max().item()
-    mean_error_pytorch = diff_pytorch.mean().item()
-    error_count_pytorch = (diff_pytorch > 0.1).sum().item()
+    # out_ref_pytorch_float = out_ref_pytorch.float()
+    # diff_pytorch = (out_float - out_ref_pytorch_float).abs()
+    # max_error_pytorch = diff_pytorch.max().item()
+    # mean_error_pytorch = diff_pytorch.mean().item()
+    # error_count_pytorch = (diff_pytorch > 0.1).sum().item()
 
-    print(f"Max error between kernel and PyTorch reference: {max_error_pytorch}")
-    print(f"Mean error between kernel and PyTorch reference: {mean_error_pytorch}")
-    print(f"Number of large errors (>0.1) between kernel and PyTorch reference: {error_count_pytorch}\n")
+    # print(f"Max error between kernel and PyTorch reference: {max_error_pytorch}")
+    # print(f"Mean error between kernel and PyTorch reference: {mean_error_pytorch}")
+    # print(f"Number of large errors (>0.1) between kernel and PyTorch reference: {error_count_pytorch}\n")
 
     if using_aiter:
 
@@ -187,6 +195,9 @@ if profiling:
         print(f"Mean error: {mean_error}")
         print(f"Number of large errors (>0.1): {error_count}\n")
 
+
+        print(out[0, 0, 0, :16])
+        print(out_ref_float[0, 0, 0, :16])
 
     ############## LOGGING OUTPUTS ####################
 
