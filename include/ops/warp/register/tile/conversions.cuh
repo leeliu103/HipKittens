@@ -254,12 +254,25 @@ __device__ static inline void swap_layout(rt<T2, _height, _width, typename ducks
  * @param src[in] Reference to the register base tile to be swapped in place.
  * @return A reference to the swapped register base tile.
  */
+#ifdef KITTENS_CDNA4
+template<typename T2, ducks::rt_layout::classic layout>
+#else
 template<typename T2, ducks::rt_layout::all layout>
+#endif
 __device__ inline rt_base<T2, typename ducks::rt_layout::transpose<layout>::type>& swap_layout_inplace(const rt_base<T2, layout> &src) {
     rt_base<T2, typename ducks::rt_layout::transpose<layout>::type> &dst = *(rt_base<T2, typename ducks::rt_layout::transpose<layout>::type>*)(&src);
     swap_layout(dst, src);
     return dst;
 }
+
+#ifdef KITTENS_CDNA4
+template<typename T2, ducks::rt_layout::accum layout>
+__device__ inline rt_base<T2, typename ducks::rt_layout::col>& swap_layout_inplace(const rt_base<T2, layout> &src) {
+    rt_base<T2, typename ducks::rt_layout::col> &dst = *(rt_base<T2, typename ducks::rt_layout::col>*)(&src);
+    swap_layout(dst, src);
+    return dst;
+}
+#endif
 /**
  * @brief Swaps the layout of a register tile in place.
  *
@@ -273,7 +286,11 @@ __device__ inline rt_base<T2, typename ducks::rt_layout::transpose<layout>::type
  * @param tile[in,out] Reference to the register tile to be swapped in place.
  * @return A reference to the swapped register tile.
  */
+#ifdef KITTENS_CDNA4
+template<typename T2, int _rows, int _cols, ducks::rt_layout::classic layout>
+#else
 template<typename T2, int _rows, int _cols, ducks::rt_layout::all layout>
+#endif
 __device__ static inline rt<T2, _rows, _cols, typename ducks::rt_layout::transpose<layout>::type>& swap_layout_inplace(rt<T2, _rows, _cols, layout> &tile) {
     #pragma unroll
     for(int i = 0; i < tile.height; i++) {
@@ -284,6 +301,20 @@ __device__ static inline rt<T2, _rows, _cols, typename ducks::rt_layout::transpo
     }
     return *(rt<T2, _rows, _cols, typename ducks::rt_layout::transpose<layout>::type>*)(&tile);
 }
+
+#ifdef KITTENS_CDNA4
+template<typename T2, int _rows, int _cols, ducks::rt_layout::accum layout>
+__device__ static inline rt<T2, _rows, _cols, typename ducks::rt_layout::col>& swap_layout_inplace(rt<T2, _rows, _cols, layout> &tile) {
+    #pragma unroll
+    for(int i = 0; i < tile.height; i++) {
+        #pragma unroll
+        for(int j = 0; j < tile.width; j++) {
+            swap_layout_inplace(tile.tiles[i][j]);
+        }
+    }
+    return *(rt<T2, _rows, _cols, typename ducks::rt_layout::col>*)(&tile);
+}
+#endif
 
 /* ----------  TRANSPOSE  ---------- */
 
