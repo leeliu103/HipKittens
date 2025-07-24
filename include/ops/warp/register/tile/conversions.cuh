@@ -105,7 +105,11 @@ namespace kittens {
             // printf("Thread: %d, Setting: %d, Sending: %d, From: %d\n", lane, setting, sending, from);
         }
         else {
-            dst_tmp[thread_offset^block_offset^k] = __shfl(src_tmp[thread_offset^send_offset^k], block_src_trans + thread_offset^block_offset^k);
+            int that_is_the_question = (k / 8) * 24;
+            int setting = thread_offset^block_offset^k^to_flip;
+            int sending = thread_offset^send_offset^k^to_flip;
+            int from = block_src_trans + thread_offset^block_offset^k^or_not_to_flip^that_is_the_question;
+            dst_tmp[setting] = __shfl(src_tmp[sending], from);
         }
     }
 
