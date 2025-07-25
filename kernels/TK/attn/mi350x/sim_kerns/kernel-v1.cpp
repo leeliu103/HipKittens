@@ -72,8 +72,15 @@ __global__ void attend_ker(const attn_globals<D> g) {
     qkvo_tile<D, bf16> q_reg, k_reg; // Q and K are both row layout, as we use mma_ABt.
     qkvo_tile<D, bf16, col_l> v_reg; // V is column layout, as we use mma_AB.
     qkvo_tile<D, float, accum_l> o_reg; // Output tile.
-    attn_tile<D, float, accum_l> att_block; // attention tile, in float. (We want to use float wherever possible.)
-    typename attn_tile<D, float, accum_l>::col_vec max_vec_last_scaled, max_vec_scaled, max_vec, norm_vec; // these are column vectors for the online softmax.
+    attn_tile<D, float, accum_l> att_block; // attention tile, in float.
+    typename attn_tile<D, float, accum_l>::col_vec max_vec, norm_vec, max_vec_prev;
+
+    // Pre-scale Q by temperature
+    load(q_reg, g.Qg, {batch_idx, head_idx, tile_idx, 0});
+    qkvo_tile<D, float> q_reg_fl;
+    copy(q_reg_fl, q_reg);
+    mul(q_reg_fl, q_reg_fl, TEMPERATURE_SCALE);  // Use sqrtf for clarity
+    copy(q_reg, q_reg_fl);
 
     int tic = 0, toc = 1;
     load_global_to_shared_direct<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP,ATTN_D>>, NUM_THREADS>(
@@ -81,11 +88,11 @@ __global__ void attend_ker(const attn_globals<D> g) {
     load_global_to_shared_direct<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP,ATTN_D>>, NUM_THREADS>(
         g.Vg, {batch_idx, head_idx, 0, 0}, v_smem[tic]);
 
-    // Given i = blockIdx.x, load Q_i from global to registers. Set O_i = 0, l_i = 0, m_i = -inf.
+    // Initialize output and running statistics
     zero(o_reg);
     zero(norm_vec);
     neg_infty(max_vec);
-    load(q_reg, g.Qg, {batch_idx, head_idx, tile_idx, 0});
+
 
     int num_tiles = ATTN_N / N_STEP;
     int num_sub_tiles = N_STEP / SUB_N_STEP;
@@ -93,7 +100,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     // Iterate over chunks of keys and values.
     for (int j = 0; j < num_tiles - 1; j++, tic^=1, toc^=1) {
 
-        // __builtin_amdgcn_s_waitcnt(0);
         __builtin_amdgcn_s_barrier();
         // load the k and v tiles from global to shared memory
         load_global_to_shared_direct<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP,ATTN_D>>, NUM_THREADS>(
@@ -101,30 +107,36 @@ __global__ void attend_ker(const attn_globals<D> g) {
         load_global_to_shared_direct<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP,ATTN_D>>, NUM_THREADS>(
             g.Vg, {batch_idx, head_idx, j + 1, 0}, v_smem[toc]);
 
-        // Reduce register pressure.
+        // Process sub-tiles
         for (int i = 0; i < num_sub_tiles; i++) {
 
             // load the k and v tiles from shared memory to registers
             load_lds_reg(k_reg, subtile_inplace<SUB_N_STEP, ATTN_D>(k_smem[tic], {i, 0}));
             load_lds_reg(v_reg, subtile_inplace<SUB_N_STEP, ATTN_D>(v_smem[tic], {i, 0}));
 
-            // A = Q @ K.T
+            // A = Q @ K.T (now temperature is fully applied)
             zero(att_block);
             mma_ABt(att_block, q_reg, k_reg, att_block);
-            mul(max_vec_last_scaled, max_vec, TEMPERATURE_SCALE);
-
-            // softmax
-            row_max(max_vec, att_block, max_vec);
-            mul(max_vec_scaled, max_vec, TEMPERATURE_SCALE);
-            mul(att_block, att_block, TEMPERATURE_SCALE);
-            sub_row(att_block, att_block, max_vec_scaled);
+            
+            // Store previous max values
+            copy(max_vec_prev, max_vec);
+            
+            // Update max in-place and compute correction
+            row_max(max_vec, att_block, max_vec);  // max_vec = max(max_vec, row_max(att_block))
+            sub(max_vec_prev, max_vec_prev, max_vec);  // max_vec_prev = old_max - new_max
+            exp2(max_vec_prev, max_vec_prev);  // max_vec_prev = exp2(old_max - new_max)
+            
+            // Apply max normalization to attention scores
+            sub_row(att_block, att_block, max_vec);
             exp2(att_block, att_block);
-            sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
-            exp2(max_vec_last_scaled, max_vec_last_scaled);
-            mul(norm_vec, norm_vec, max_vec_last_scaled);
+            
+            // Update running normalization
+            mul(norm_vec, norm_vec, max_vec_prev);
             row_sum(norm_vec, att_block, norm_vec);
-            mul_row(o_reg, o_reg, max_vec_last_scaled);
-
+            
+            // Update running output
+            mul_row(o_reg, o_reg, max_vec_prev);
+            
             attn_tile<D, bf16, accum_l> att_block_bf16;
             copy(att_block_bf16, att_block);  // float → bf16, same layout
             auto& att_block_row_bf16 = swap_layout_inplace<row_l>(att_block_bf16);
@@ -134,7 +146,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         }
     }
 
-    // Epilogue
+    // Epilogue - process final tile
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_s_barrier();
 
@@ -147,29 +159,28 @@ __global__ void attend_ker(const attn_globals<D> g) {
         // A = Q @ K.T
         zero(att_block);
         mma_ABt(att_block, q_reg, k_reg, att_block);
-        mul(max_vec_last_scaled, max_vec, TEMPERATURE_SCALE);
 
-        // softmax
+        // Online softmax
+        copy(max_vec_prev, max_vec);
         row_max(max_vec, att_block, max_vec);
-        mul(max_vec_scaled, max_vec, TEMPERATURE_SCALE);
-        mul(att_block, att_block, TEMPERATURE_SCALE);
-        sub_row(att_block, att_block, max_vec_scaled);
+        sub(max_vec_prev, max_vec_prev, max_vec);
+        exp2(max_vec_prev, max_vec_prev);
+        
+        sub_row(att_block, att_block, max_vec);
         exp2(att_block, att_block);
-        sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
-        exp2(max_vec_last_scaled, max_vec_last_scaled);
-        mul(norm_vec, norm_vec, max_vec_last_scaled);
+        
+        mul(norm_vec, norm_vec, max_vec_prev);
         row_sum(norm_vec, att_block, norm_vec);
-        mul_row(o_reg, o_reg, max_vec_last_scaled);
+        mul_row(o_reg, o_reg, max_vec_prev);
 
         attn_tile<D, bf16, accum_l> att_block_bf16;
-        copy(att_block_bf16, att_block);  // float → bf16, same layout
+        copy(att_block_bf16, att_block);
         auto& att_block_row_bf16 = swap_layout_inplace<row_l>(att_block_bf16);
 
-        // O += A @ V
         mma_AB(o_reg, att_block_row_bf16, v_reg, o_reg);
     }
 
-    // O_i = diag(l_i)^-1 @ O_i
+    // Final normalization
     div_row(o_reg, o_reg, norm_vec);
 
     // Store O_i back to global memory.
