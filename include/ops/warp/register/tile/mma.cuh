@@ -172,7 +172,18 @@ __device__ static inline void mma_ABt_base(rt_base<float, ducks::rt_layout::col>
  * @param[in] c The input rt_base<float2, row_layout> accumulator matrix.
  */
 #ifdef KITTENS_CDNA4
-
+__device__ static inline void mma_AtB_base(rt_base<float, ducks::rt_layout::accumulator> &d,
+                                        const rt_base<half, ducks::rt_layout::col> &a,
+                                        const rt_base<half, ducks::rt_layout::col> &b, // in col-major mode
+                                        const rt_base<float, ducks::rt_layout::accumulator> &c) {
+    mfma323216(d.data, a.data, b.data, c.data);
+}
+__device__ static inline void mma_AtB_base(rt_base<float, ducks::rt_layout::accumulator> &d,
+                                        const rt_base<bf16, ducks::rt_layout::col> &a,
+                                        const rt_base<bf16, ducks::rt_layout::col> &b, // in col-major mode
+                                        const rt_base<float, ducks::rt_layout::accumulator> &c) {
+    mfma323216(d.data, a.data, b.data, c.data);
+}
 #else
 __device__ static inline void mma_AtB_base(rt_base<float, ducks::rt_layout::col> &d,
                                      const rt_base<half, ducks::rt_layout::col> &a,
@@ -199,7 +210,18 @@ __device__ static inline void mma_AtB_base(rt_base<float, ducks::rt_layout::col>
  * @param[in] c The input rt_base<float2, row_layout> accumulator matrix.
  */
 #ifdef KITTENS_CDNA4
-
+__device__ static inline void mma_AtBt_base(rt_base<float, ducks::rt_layout::accumulator> &d,
+                                        const rt_base<half, ducks::rt_layout::col> &a,
+                                        const rt_base<half, ducks::rt_layout::row> &b, // in col-major mode
+                                        const rt_base<float, ducks::rt_layout::accumulator> &c) {
+    mfma323216(d.data, a.data, b.data, c.data);
+}
+__device__ static inline void mma_AtBt_base(rt_base<float, ducks::rt_layout::accumulator> &d,
+                                        const rt_base<bf16, ducks::rt_layout::col> &a,
+                                        const rt_base<bf16, ducks::rt_layout::row> &b, // in col-major mode
+                                        const rt_base<float, ducks::rt_layout::accumulator> &c) {
+    mfma323216(d.data, a.data, b.data, c.data);
+}
 #else
 __device__ static inline void mma_AtBt_base(rt_base<float, ducks::rt_layout::col> &d,
                                       const rt_base<half, ducks::rt_layout::col> &a,
@@ -342,9 +364,10 @@ __device__ static inline void mma_ABt(D &d,
  * @param[in] c The input rt_fl<N, M, row_layout> accumulator matrix.
  */
 #ifdef KITTENS_CDNA4
-
+template<ducks::rt::accumulator_layout D, ducks::rt::col_layout A, ducks::rt::col_layout B, ducks::rt::accumulator_layout C>
 #else
 template<ducks::rt::col_layout D, ducks::rt::col_layout A, ducks::rt::col_layout B, ducks::rt::col_layout C>
+#endif
 __device__ static inline void mma_AtB(D &d,
                                 const A &a,
                                 const B &b,
@@ -382,7 +405,7 @@ __device__ static inline void mma_AtB(D &d,
         }
     }
 }
-#endif
+
 /**
  * @brief Matrix multiply-accumulate operation with transposed A and B.
  *
@@ -398,9 +421,10 @@ __device__ static inline void mma_AtB(D &d,
  * @param[in] c The input rt_fl<N, M, row_layout> accumulator matrix.
  */
 #ifdef KITTENS_CDNA4
-
+template<ducks::rt::accumulator_layout D, ducks::rt::col_layout A, ducks::rt::row_layout B, ducks::rt::accumulator_layout C>
 #else
 template<ducks::rt::col_layout D, ducks::rt::col_layout A, ducks::rt::row_layout B, ducks::rt::col_layout C>
+#endif
 __device__ static inline void mma_AtBt(D &d,
                                  const A &a,
                                  const B &b,
@@ -438,5 +462,4 @@ __device__ static inline void mma_AtBt(D &d,
         }
     }
 }
-#endif
 }

@@ -31,12 +31,8 @@ namespace kittens {
  * @brief Tile dimension constant.
  */
 #ifdef KITTENS_CDNA4
-// double the row dimension due to the direct to lds swizzle pattern
 template<typename T> constexpr int TILE_COL_DIM = sizeof(T) == 1 ? 64 : 32; 
-// template<typename T> constexpr int TILE_COL_DIM = sizeof(T) == 1 ? 32 : 16; 
 template<typename T> constexpr int TILE_ROW_DIM = 32;
-template<typename T> constexpr int ACCUMULATOR_TILE_COL_DIM = sizeof(T) == 1 ? 64 : 32;
-template<typename T> constexpr int ACCUMULATOR_TILE_ROW_DIM = 32;
 #else
 template<typename T> constexpr int TILE_COL_DIM = sizeof(T) == 1 ? 32 : 16;
 template<typename T> constexpr int TILE_ROW_DIM = 16;

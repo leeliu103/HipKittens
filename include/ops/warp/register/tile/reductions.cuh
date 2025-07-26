@@ -185,6 +185,7 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
 
         #pragma unroll
         for(int k = 0; k < packed_per_tile; k++) {
+            #pragma unroll
             for (int shift = max_shift; shift > 0; shift /= 2) {
                 accum[k] = op::template op<RT2>(accum[k], packed_shfl_down(MASK_ALL, accum[k], shift));
             }
@@ -206,6 +207,10 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
         #pragma unroll
         for(int k = 0; k < packed_per_tile; k++) {
             row_accum[i][k] = packed_shfl(MASK_ALL, row_accum[i][k], leader);
+            if (threadIdx.x == 0 || threadIdx.x == 32) {
+                printf("threadIdx.x: %d, i: %d, k: %d, row_accum[i][k].x: %f\n", threadIdx.x, i, k, row_accum[i][k].x);
+                printf("threadIdx.x: %d, i: %d, k: %d, row_accum[i][k].y: %f\n", threadIdx.x, i, k, row_accum[i][k].y);
+            }
         }
     }
 }
@@ -326,6 +331,50 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
         col_accum[j][0].y = col_accum[j][0].x;
     }
 }
+
+#ifdef KITTENS_CDNA4
+template<typename op, ducks::rv::all V, ducks::rt::accumulator_layout T, bool reset>
+__device__ static inline void col_reduce(V &col_accum, const T &src, const V &src_accum) {
+    // I actually like these static asserts because they give more verbose errors when things go wrong.
+    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout>::row_vec_layout>); // compatible layout
+    static_assert(std::is_same_v<typename V::dtype, typename T::dtype>); // compatible type
+    static_assert(V::outer_dim == T::width); // compatible size
+
+    using RT2 = V::dtype;
+    using RT = base_types::packing<RT2>::unpacked_type;
+
+    const int leader = laneid() % 32;
+    #pragma unroll
+    for(int j = 0; j < src.width; j++) { // note now width is the outer loop
+        RT2 accum_packed = op::template op<RT2>(src.tiles[0][j].data[0], src.tiles[0][j].data[1]);
+        #pragma unroll
+        for(int i = 1; i < src.height; i++) { // and height is the inner loop
+            #pragma unroll
+            for(int k = 0; k < src.packed_per_tile; k++) {
+                accum_packed = op::template op<RT2>(accum_packed, src.tiles[i][j].data[k]);
+            }
+        }
+
+        RT accum_single = op::template op<RT>(accum_packed.x, accum_packed.y);
+
+        // Now we need to do a lil shuffle to make everyone happy.
+
+        accum_single = op::template op<RT>(accum_single, packed_shfl_down(MASK_ALL, accum_single, 32));
+
+        if(reset) {
+            col_accum[j][0].x = accum_single;
+        }
+        else {
+            col_accum[j][0].x = op::template op<RT>(src_accum[j][0].x, accum_single);
+        }
+
+        col_accum[j][0].x = packed_shfl(MASK_ALL, col_accum[j][0].x, leader);
+        col_accum[j][0].y = col_accum[j][0].x;
+
+        printf("threadIdx.x: %d, j: %d, accum_single: %f\n", threadIdx.x, j, accum_single);
+    }
+}
+#endif
 
 
 /* ----------  WRAPPERS FOR PRETTINESS  ---------- */
