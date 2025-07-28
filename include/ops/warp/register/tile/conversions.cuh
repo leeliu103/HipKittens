@@ -26,9 +26,12 @@ namespace kittens {
  #ifdef KITTENS_CDNA4
  template<typename T, ducks::rt_layout::accum layout>
  __device__ inline void swap_layout(rt_base<T, typename ducks::rt_layout::col> &dst, const rt_base<T, layout> &src) {
+
+    typedef unsigned int  uint32_t;
+    typedef uint32_t      uint2_t __attribute__((ext_vector_type(2)));
  
-     int lane = laneid();
-     int block_offset = (lane / 32) * 4;
+    //  int lane = laneid();
+    //  int block_offset = (lane / 32) * 4;
  
      T src_tmp[16] = {
          src.data[0].x, src.data[0].y,
@@ -42,41 +45,63 @@ namespace kittens {
      };
  
      T dst_tmp[16];
-     #pragma unroll
-     for(int k = 0; k < 8; k++) {
+    //  #pragma unroll
+    //  for(int k = 0; k < 8; k++) {
+    //     // 0:4, 8:12
+    //     const int kk = (k / 4) * 8 + (k % 4);
+    //     dst_tmp[block_offset^kk] = src_tmp[block_offset^kk];
+    //  }
+    //  #pragma unroll
+    //  for(int k = 0; k < 8; k++) {
+    //     // 4:8, 12:16
+    //     const int kk = (k / 4) * 8 + (k % 4) + 4;
+    //     if constexpr (std::is_same_v<T, bf16>) {
+    //         dst_tmp[block_offset^kk] = __float2bfloat16(__shfl(__bfloat162float(src_tmp[block_offset^kk]), lane ^ (((kk % 8) / 4) * 32)));
+    //     }
+    //     else {
+    //         dst_tmp[block_offset^kk] = __shfl(src_tmp[block_offset^kk], lane ^ (((kk % 8) / 4) * 32));
+    //     }
+    //  }
+
+    #pragma unroll
+    for(int k = 0; k < 8; k++) {
         // 0:4, 8:12
         const int kk = (k / 4) * 8 + (k % 4);
-        dst_tmp[block_offset^kk] = src_tmp[block_offset^kk];
-     }
-     #pragma unroll
-     for(int k = 0; k < 8; k++) {
-        // 4:8, 12:16
-        const int kk = (k / 4) * 8 + (k % 4) + 4;
-        if constexpr (std::is_same_v<T, bf16>) {
-            dst_tmp[block_offset^kk] = __float2bfloat16(__shfl(__bfloat162float(src_tmp[block_offset^kk]), lane ^ (((kk % 8) / 4) * 32)));
+        if constexpr (std::is_same_v<T, float>) {
+            uint2_t res = __builtin_amdgcn_permlane32_swap(__float_as_uint(src_tmp[kk]), __float_as_uint(src_tmp[kk + 4]), false, true);
+            dst_tmp[kk] = __uint_as_float(res.x);
+            dst_tmp[kk + 4] = __uint_as_float(res.y);
         }
-        else {
-            dst_tmp[block_offset^kk] = __shfl(src_tmp[block_offset^kk], lane ^ (((kk % 8) / 4) * 32));
+        else if constexpr (std::is_same_v<T, bf16>) {
+            uint2_t res = __builtin_amdgcn_permlane32_swap(__bfloat16_as_ushort(src_tmp[kk]), __bfloat16_as_ushort(src_tmp[kk + 4]), false, true);
+            dst_tmp[kk] = __ushort_as_bfloat16(res.x);
+            dst_tmp[kk + 4] = __ushort_as_bfloat16(res.y);
         }
-     }
+        else if constexpr (std::is_same_v<T, half>) {
+            uint2_t res = __builtin_amdgcn_permlane32_swap(__half_as_ushort(src_tmp[kk]), __half_as_ushort(src_tmp[kk + 4]), false, true);
+            dst_tmp[kk] = __ushort_as_half(res.x);
+            dst_tmp[kk + 4] = __ushort_as_half(res.y);
+        }
+    }
  
-     dst.data[0].x = dst_tmp[0];
-     dst.data[0].y = dst_tmp[1];
-     dst.data[1].x = dst_tmp[2];
-     dst.data[1].y = dst_tmp[3];
-     dst.data[2].x = dst_tmp[4];
-     dst.data[2].y = dst_tmp[5];
-     dst.data[3].x = dst_tmp[6];
-     dst.data[3].y = dst_tmp[7];
-     dst.data[4].x = dst_tmp[8];
-     dst.data[4].y = dst_tmp[9];
-     dst.data[5].x = dst_tmp[10];
-     dst.data[5].y = dst_tmp[11];
-     dst.data[6].x = dst_tmp[12];
-     dst.data[6].y = dst_tmp[13];
-     dst.data[7].x = dst_tmp[14];
-     dst.data[7].y = dst_tmp[15];
- }
+    //  dst.data[0].x = dst_tmp[0];
+    //  dst.data[0].y = dst_tmp[1];
+    //  dst.data[1].x = dst_tmp[2];
+    //  dst.data[1].y = dst_tmp[3];
+    //  dst.data[2].x = dst_tmp[4];
+    //  dst.data[2].y = dst_tmp[5];
+    //  dst.data[3].x = dst_tmp[6];
+    //  dst.data[3].y = dst_tmp[7];
+    //  dst.data[4].x = dst_tmp[8];
+    //  dst.data[4].y = dst_tmp[9];
+    //  dst.data[5].x = dst_tmp[10];
+    //  dst.data[5].y = dst_tmp[11];
+    //  dst.data[6].x = dst_tmp[12];
+    //  dst.data[6].y = dst_tmp[13];
+    //  dst.data[7].x = dst_tmp[14];
+    //  dst.data[7].y = dst_tmp[15];
+    memcpy(&dst.data[0], &dst_tmp[0], sizeof(dst.data));
+}
 
   template<typename T, ducks::rt_layout::accum layout>
  __device__ inline void swap_layout(rt_base<T, typename ducks::rt_layout::row> &dst, const rt_base<T, layout> &src) {
