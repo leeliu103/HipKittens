@@ -9,7 +9,7 @@ constexpr int ATTN_D = 64; // dimension
 constexpr int N_STEP = 128;
 constexpr int BLOCK_SIZE = 32; // block size
 
-#define NUM_WARPS 8
+#define NUM_WARPS 16
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
 using namespace kittens;
@@ -49,7 +49,7 @@ template<int D> struct attn_globals {
     _gl_QKVO Qg, Kg, Vg, Og; 
     dim3 grid() { return dim3(ATTN_B, ATTN_H, ((ATTN_N / BLOCK_SIZE + NUM_WARPS - 1) / NUM_WARPS)); }
     dim3 block() { return dim3(NUM_THREADS); }
-    size_t dynamic_shared_memory() { return MAX_SHARED_MEMORY - 32768; }
+    size_t dynamic_shared_memory() { return MAX_SHARED_MEMORY; }
 };
 
 template<int D> __launch_bounds__(NUM_THREADS, 2)
@@ -120,7 +120,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         load_global_to_shared_direct_with_swizzled_offsets<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP, ATTN_D>>, NUM_THREADS>(
             g.Vg, {batch_idx, head_idx, j + 1, 0}, v_smem[toc], swizzled_offsets_V);
 
-        #pragma unroll
+        // #pragma unroll
         for (int i = 0; i < num_sub_tiles; i++) {
 
             __builtin_amdgcn_sched_barrier(0);
@@ -165,7 +165,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_s_barrier();
 
-    #pragma unroll
+    // #pragma unroll
     for (int i = 0; i < num_sub_tiles; i++) {
 
         __builtin_amdgcn_sched_barrier(0);
