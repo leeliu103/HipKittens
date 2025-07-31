@@ -9,10 +9,6 @@ From the [PyTorch website](https://pytorch.org/get-started/locally/)
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2.4
 ```
 
-### Recent Updates (Nov 23, 2024)
-- kernels/example_bind has a newer, simpler way to get started binding TK kernels up to PyTorch.
-- FP8 support.
-- New-axis loads, automatic padding, and other QoL improvements.
 
 ### Tile primitives for speedy kernels
 
@@ -29,10 +25,6 @@ ThunderKittens is built around three key principles:
 1. Simplicity. ThunderKittens is stupidly simple to write.
 2. Extensibility. ThunderKittens embeds itself natively, so that if you need more than ThunderKittens can offer, it won’t get in your way of building it yourself.
 3. Speed. Kernels written in ThunderKittens should be at least as fast as those written from scratch -- especially because ThunderKittens can do things the “right” way under the hood. We think our Flash Attention 3 implementation speaks for this point.
-
-<div align="center" >
-    <img src="assets/attn.png" height=600 alt="Flash Attention 3, but with kittens!" style="margin-bottom:px"/> 
-</div>
 
 Join us on Discord to get involved: [ThunderKittens channel @ GPU Mode Discord](https://discord.com/channels/1189498204333543425/1300872762163728550)!!!! Here is the invite link to GPU mode: https://discord.gg/gpumode
 
@@ -112,5 +104,5 @@ Learn more about the ThunderKittens project and how GPUs work by checking out ou
 - [ThunderKittens: Bringing fp8 to theaters near you, Nov 2024](https://hazyresearch.stanford.edu/blog/2024-11-27-tk-fp8)
 - [ThunderMittens For Your ThunderKittens, Nov 2024](https://hazyresearch.stanford.edu/blog/2024-11-28-tk-mlx)
 
-Please check out our paper for even more details: [paper](https://arxiv.org/abs/2410.20399)
+Please check out our paper for even more details: [arxiv](https://arxiv.org/abs/2410.20399).
 
