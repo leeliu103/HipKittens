@@ -25,13 +25,3 @@ Mi355x:
 <div align="center" >
     <img src="mi355x_bf16_gemm_plot.png" height=400 alt="mi300x" style="margin-bottom:px"/>
 </div>
-
-
-### Attention
-
-Mi325x:
-TODO.
-
-Mi350x:
-TODO.
-
