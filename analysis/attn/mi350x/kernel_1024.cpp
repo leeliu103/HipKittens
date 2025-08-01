@@ -7,9 +7,9 @@ constexpr int ATTN_H = 16; // number of heads
 constexpr int ATTN_N = 1024; // sequence length
 constexpr int ATTN_D = 64; // dimension
 constexpr int N_STEP = 256;
-constexpr int BLOCK_SIZE = 32; // block size
+constexpr int BLOCK_SIZE = 64; // block size
 
-#define NUM_WARPS 16
+#define NUM_WARPS 8
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
 using namespace kittens;
@@ -64,7 +64,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     const int head_idx = blockIdx.y;
     const int block_tile_idx = blockIdx.z;
     const int tile_idx = block_tile_idx * NUM_WARPS + warpid();
-    const int stagger = warpid() / 8;
+    const int stagger = warpid() / 4;
 
     const int num_tiles = ATTN_N / N_STEP;
     const int num_sub_tiles = N_STEP / BLOCK_SIZE;
@@ -119,7 +119,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
 
     for (int j = 0; j < num_tiles - 1; j++, tic^=1, toc^=1) {
-
 
         load_global_to_shared_direct_with_swizzled_offsets<1, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP, ATTN_D>>, NUM_THREADS>(
             g.Kg, {batch_idx, j + 1, head_idx, 0}, k_smem[toc], swizzled_offsets_K);
