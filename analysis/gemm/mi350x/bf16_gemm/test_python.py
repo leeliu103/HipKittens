@@ -111,31 +111,6 @@ if profiling:
     print("diff[32:64, 32:64].max()", diff[32:64, 32:64].max())
     print()
 
-    # print("diff[:32, 64:96].max()", diff[:32, 64:96].max())
-    # print("diff[:32, 96:128].mean()", diff[:32, 96:128].mean())
-    # print("diff[32:64, 64:96].max()", diff[32:64, 64:96].max())
-    # print("diff[32:64, 96:128].max()", diff[32:64, 96:128].max())
-    # print()
-
-    # print("diff[64:96, :32].max()", diff[64:96, :32].max())
-    # print("diff[64:96, 32:64].max()", diff[64:96, 32:64].max())
-    # print("diff[64:96, 64:96].max()", diff[64:96, 64:96].max())
-    # print()
-
-
-    # print("diff[64:128, 64:128].max()", diff[64:128, 64:128].max())
-    # print("diff[128:192, 128:192].max()", diff[128:192, 128:192].max())
-    # print("diff[192:256, 192:256].max()", diff[192:256, 192:256].max())
-
-    # # end tiles
-    # print("diff[7168:7232, 7168:7232].max()", diff[7168:7232, 7168:7232].max())
-    # print("diff[7232:7296, 7232:7296].max()", diff[7232:7296, 7232:7296].max())
-    # print("diff[7296:7360, 7296:7360].max()", diff[7296:7360, 7296:7360].max())
-    # print("diff[7360:7424, 7360:7424].max()", diff[7360:7424, 7360:7424].max())
-
-
-
-
     ############### LOGGING OUTPUTS ####################
 
     data_to_log = {

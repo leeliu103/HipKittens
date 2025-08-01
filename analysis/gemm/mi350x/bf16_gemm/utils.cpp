@@ -246,9 +246,9 @@ __device__ inline void load_global_to_shared_direct(
     const GL& src, const COORD& idx, ST& dst)
 {
     using T = typename ST::dtype;
-    constexpr int memcpy_per_tile = ST::rows * ST::cols * sizeof(T) / (16 * N_THREADS);
+    constexpr int memcpy_per_tile = ST::rows * ST::cols * sizeof(T) / (16 * N_THREADS); // 2
     
-    constexpr int elem_per_thread = 16 / sizeof(T);  // e.g., 8 for bf16, 4 for fp32
+    constexpr int elem_per_thread = 16 / sizeof(T);  // 8
     constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS;
     constexpr int threads_per_row = ST::cols / elem_per_thread; 
 
@@ -265,6 +265,7 @@ __device__ inline void load_global_to_shared_direct(
 
     #pragma unroll
     for (int i = 0; i < memcpy_per_tile; i++) {
+
         int offset_threads = (i * N_THREADS + threadIdx.x % N_THREADS);
         const int row_in_lds = offset_threads / threads_per_row;
         const int col_in_lds = (offset_threads % threads_per_row) * elem_per_thread;
@@ -412,41 +413,50 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
         col_offset = 8*(laneid/32);
     }
     else {
-        row_offset = 8*(laneid/16);
-        col_offset = laneid%16;
+        row_offset = 8*(laneid/32);
+        col_offset = laneid%32;
     }
 
-    #pragma unroll
-    for(int j = 0; j < dst.width; j++) {
-        const int col = j*dst.tile_size_col + col_offset;
-        uint32_t addr = src.idx(src_ptr, {row_offset, col});
+    #pragma unroll 
+    for (int k = 0; k < 2; k++) {
+
         #pragma unroll
-        for(int i = 0; i < dst.height; i++) {
-            const int row = i*dst.tile_size_row + row_offset;
+        for(int j = 0; j < dst.width; j++) {
 
-            if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) { // handle the row-major layout
-
-                // float4 loaded = load_shared_vec_b128(addr, i * ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U));
-                // U2* tmp = reinterpret_cast<U2*>(&loaded);
-                // dst.tiles[i][j].data[0] = base_types::convertor<T2, U2>::convert(tmp[0]);
-                // dst.tiles[i][j].data[1] = base_types::convertor<T2, U2>::convert(tmp[1]);
-                // dst.tiles[i][j].data[2] = base_types::convertor<T2, U2>::convert(tmp[2]);
-                // dst.tiles[i][j].data[3] = base_types::convertor<T2, U2>::convert(tmp[3]);
-
-                // avoid v_bfi_b32
-                asm volatile(
-                    "ds_read_b128 %0, %1 offset:%2\n"
-                    : "=v"(*reinterpret_cast<float4*>(&dst.tiles[i][j].data[0]))
-                    : "v"(addr), "i"(i * ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U))
-                    : "memory"
-                );
-
+            int col = 0;
+            if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) {
+                col = j*dst.tile_size_col + col_offset + k*16;
+            } else {
+                col = j*dst.tile_size_col + col_offset;
             }
-            else { // handle the column-major layout
-                dst.tiles[i][j].data[0] = base_types::convertor<T2, U2>::convert(U2{src[{row, col}], src[{row+1, col}]});
-                dst.tiles[i][j].data[1] = base_types::convertor<T2, U2>::convert(U2{src[{row+2, col}], src[{row+3, col}]});
-                dst.tiles[i][j].data[2] = base_types::convertor<T2, U2>::convert(U2{src[{row+4, col}], src[{row+5, col}]});
-                dst.tiles[i][j].data[3] = base_types::convertor<T2, U2>::convert(U2{src[{row+6, col}], src[{row+7, col}]});
+
+            uint32_t addr = src.idx(src_ptr, {row_offset, col});
+
+            #pragma unroll
+            for(int i = 0; i < dst.height; i++) {
+
+                int row = 0;
+                if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) { 
+                    row = i*dst.tile_size_row + row_offset;
+                } else {
+                    row = i*dst.tile_size_row + row_offset + k*16;
+                }
+
+                if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) { // handle the row-major layout
+
+                    asm volatile(
+                        "ds_read_b128 %0, %1 offset:%2\n"
+                        : "=v"(*reinterpret_cast<float4*>(&dst.tiles[i][j].data[k*4]))
+                        : "v"(addr), "i"(i * ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U))
+                        : "memory"
+                    );
+                }
+                else { // handle the column-major layout
+                    dst.tiles[i][j].data[0+k*4] = base_types::convertor<T2, U2>::convert(U2{src[{row, col}], src[{row+1, col}]});
+                    dst.tiles[i][j].data[1+k*4] = base_types::convertor<T2, U2>::convert(U2{src[{row+2, col}], src[{row+3, col}]});
+                    dst.tiles[i][j].data[2+k*4] = base_types::convertor<T2, U2>::convert(U2{src[{row+4, col}], src[{row+5, col}]});
+                    dst.tiles[i][j].data[3+k*4] = base_types::convertor<T2, U2>::convert(U2{src[{row+6, col}], src[{row+7, col}]});
+                }
             }
         }
     }

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-for device in ['mi300x', 'mi325x', 'mi350x']:
+for device in ['mi300x', 'mi325x', 'mi350x', 'mi355x']:
 
     # Read data
     try:
@@ -20,25 +20,41 @@ for device in ['mi300x', 'mi325x', 'mi350x']:
         aiter_tflops = [data[str(size)]['tflops_aiter'] for size in matrix_sizes]
     except KeyError:
         aiter_tflops = None
+
+    try:
+        hipblaslt_tflops = [data[str(size)]['tflops_hipblaslt'] for size in matrix_sizes]
+    except KeyError:
+        hipblaslt_tflops = None
+
     tk_tflops = [data[str(size)]['tflops'] for size in matrix_sizes]
 
     # Create bar chart
     x = np.arange(len(matrix_sizes))
-    width = 0.25
+    width = 0.2
 
     fig, ax = plt.subplots(figsize=(10, 6))
     bars0 = ax.bar(x - width, pytorch_tflops, width, label='PyTorch', alpha=0.8)
+     
     if aiter_tflops is not None:
         bars1 = ax.bar(x, aiter_tflops, width, label='AITER (AMD)', alpha=0.8)
-        bars2 = ax.bar(x + width, tk_tflops, width, label='ThunderKittens', alpha=0.8)
     else:
         bars1 = None
-        bars2 = ax.bar(x, tk_tflops, width, label='ThunderKittens', alpha=0.8)
+
+    if hipblaslt_tflops is not None:
+        bars2 = ax.bar(x + width, hipblaslt_tflops, width, label='HipblasLT', alpha=0.8)
+    else:
+        bars2 = None
+
+    bars3 = ax.bar(x + 2 * width, tk_tflops, width, label='ThunderKittens', alpha=0.8)
 
     if aiter_tflops is not None:
         max_tflops = max(max(pytorch_tflops), max(aiter_tflops), max(tk_tflops))
+        if hipblaslt_tflops is not None:
+            max_tflops = max(max_tflops, max(hipblaslt_tflops))
     else:
         max_tflops = max(max(pytorch_tflops), max(tk_tflops))
+        if hipblaslt_tflops is not None:
+            max_tflops = max(max_tflops, max(hipblaslt_tflops))
 
     # Add value labels on bars
     for bar, value in zip(bars0, pytorch_tflops):
@@ -52,7 +68,13 @@ for device in ['mi300x', 'mi325x', 'mi350x']:
             ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
                     f'{value:.0f}', ha='center', va='bottom', fontsize=9)
 
-    for bar, value in zip(bars2, tk_tflops):
+    if hipblaslt_tflops is not None:
+        for bar, value in zip(bars2, hipblaslt_tflops):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
+                    f'{value:.0f}', ha='center', va='bottom', fontsize=9)
+
+    for bar, value in zip(bars3, tk_tflops):
         height = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
                 f'{value:.0f}', ha='center', va='bottom', fontsize=9)
