@@ -373,12 +373,13 @@ __device__ inline static void store_transposed(const GL &dst, const RT &src, con
 
     #pragma unroll
     for(int i = 0; i < src.height; i++) {
-        int row = src.tile_size_row*i + row_offset;
+        int global_col = src.tile_size_row * i;
         #pragma unroll
         for(int j = 0; j < src.width; j++) {
+            int row = src.tile_size_col * j + row_offset;
             #pragma unroll
             for (int jj = 0; jj < 4; jj++) {
-                int col = src.tile_size_col*j + jj * 8 + col_offset * 4;
+                int col = global_col + jj * 8 + col_offset * 4;
 
                 dst_ptr[row*row_stride + col + 0] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[jj * 2].x);
                 dst_ptr[row*row_stride + col + 1] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[jj * 2].y);

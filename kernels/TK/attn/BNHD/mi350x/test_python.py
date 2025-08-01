@@ -177,7 +177,7 @@ if profiling:
 
     if using_aiter:
 
-        out_ref_float = out_ref.float()
+        out_ref_float = out_ref[0].float()
         diff = (out_float - out_ref_float)
         max_error = diff.max().item()
         mean_error = diff.mean().item()
