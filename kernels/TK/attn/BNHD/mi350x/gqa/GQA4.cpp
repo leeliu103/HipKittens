@@ -136,7 +136,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
         col_sum(norm_vec, att_block, norm_vec);
         copy(att_block_bf16, att_block);
         att_block_col_bf16 = swap_layout_inplace<col_l>(att_block_bf16);
-        __builtin_amdgcn_sched_barrier(0);
         //      QK1
         asm volatile("s_waitcnt lgkmcnt(0)");
         zero(att_block);
@@ -161,7 +160,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
         asm volatile("s_waitcnt lgkmcnt(0)");
         mul_col(o_reg, o_reg, max_vec_prev);
         mma_AtB(o_reg, v_reg, att_block_col_bf16, o_reg);
-        __builtin_amdgcn_sched_barrier(0);
         //      Partial softmax for QK1
         copy(max_vec_prev, max_vec);
         col_max(max_vec, att_block, max_vec);
@@ -189,7 +187,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
         col_sum(norm_vec, att_block, norm_vec);
         copy(att_block_bf16, att_block);
         att_block_col_bf16 = swap_layout_inplace<col_l>(att_block_bf16);
-        __builtin_amdgcn_sched_barrier(0);
         //      QK2
         asm volatile("s_waitcnt lgkmcnt(0)");
         zero(att_block);
@@ -214,7 +211,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
         asm volatile("s_waitcnt lgkmcnt(0)");
         mul_col(o_reg, o_reg, max_vec_prev);
         mma_AtB(o_reg, v_reg, att_block_col_bf16, o_reg);
-        __builtin_amdgcn_sched_barrier(0);
         //      Partial softmax for QK2
         copy(max_vec_prev, max_vec);
         col_max(max_vec, att_block, max_vec);
@@ -244,7 +240,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     col_sum(norm_vec, att_block, norm_vec);
     copy(att_block_bf16, att_block);
     att_block_col_bf16 = swap_layout_inplace<col_l>(att_block_bf16);
-    __builtin_amdgcn_sched_barrier(0);
     //      QK3
     asm volatile("s_waitcnt lgkmcnt(0)");
     zero(att_block);
@@ -269,7 +264,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     asm volatile("s_waitcnt lgkmcnt(0)");
     mul_col(o_reg, o_reg, max_vec_prev);
     mma_AtB(o_reg, v_reg, att_block_col_bf16, o_reg);
-    __builtin_amdgcn_sched_barrier(0);
     //      Partial softmax for QK3
     copy(max_vec_prev, max_vec);
     col_max(max_vec, att_block, max_vec);
@@ -297,7 +291,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     col_sum(norm_vec, att_block, norm_vec);
     copy(att_block_bf16, att_block);
     att_block_col_bf16 = swap_layout_inplace<col_l>(att_block_bf16);
-    __builtin_amdgcn_sched_barrier(0);
     //      QK4
     asm volatile("s_waitcnt lgkmcnt(0)");
     zero(att_block);
@@ -319,7 +312,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     asm volatile("s_waitcnt lgkmcnt(0)");
     mul_col(o_reg, o_reg, max_vec_prev);
     mma_AtB(o_reg, v_reg, att_block_col_bf16, o_reg);
-    __builtin_amdgcn_sched_barrier(0);
     //      Partial softmax for QK4
     copy(max_vec_prev, max_vec);
     col_max(max_vec, att_block, max_vec);
@@ -347,7 +339,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     col_sum(norm_vec, att_block, norm_vec);
     copy(att_block_bf16, att_block);
     att_block_col_bf16 = swap_layout_inplace<col_l>(att_block_bf16);
-    __builtin_amdgcn_sched_barrier(0);
     //      QK5
     asm volatile("s_waitcnt lgkmcnt(0)");
     zero(att_block);
@@ -369,7 +360,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     asm volatile("s_waitcnt lgkmcnt(0)");
     mul_col(o_reg, o_reg, max_vec_prev);
     mma_AtB(o_reg, v_reg, att_block_col_bf16, o_reg);
-    __builtin_amdgcn_sched_barrier(0);
     //      Full softmax for QK5
     copy(max_vec_prev, max_vec);
     col_max(max_vec, att_block, max_vec);
