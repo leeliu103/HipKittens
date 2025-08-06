@@ -84,7 +84,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
     zero(o_reg);
     zero(norm_vec);
-    neg_infty(max_vec);
     neg_infty(max_vec_prev);
 
     // All warps then collaboratively load in the first slice of V (V0) and the second slice of K (K1) into shared memory
@@ -105,7 +104,8 @@ __global__ void attend_ker(const attn_globals<D> g) {
     mma_AtB(att_block[0], k_reg_transposed, q_reg_transposed, att_block[0]);
 
     // Each warp performs a partial softmax of QK0 (i.e. some of the online softmax up until but not including the second exponential scaling of the attention block likely)
-    col_max(max_vec, att_block[0], max_vec);
+    // col_max(max_vec, att_block[0], max_vec);
+    col_max(max_vec, att_block[0]);
     sub_col(att_block[0], att_block[0], max_vec);
     exp2(att_block[0], att_block[0]);
 
@@ -126,6 +126,8 @@ __global__ void attend_ker(const attn_globals<D> g) {
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
 
+    
+
     // hot loop
     #pragma unroll (1)
     for (int j = 3; j < num_tiles - 1; j += 2) {
@@ -136,9 +138,11 @@ __global__ void attend_ker(const attn_globals<D> g) {
         zero(att_block[1]);
         mma_AtB(att_block[1], k_reg_transposed, q_reg_transposed, att_block[1]);
         //      Finish softmax for QK0
-        sub(max_vec_prev, max_vec_prev, max_vec); 
-        exp2(max_vec_prev, max_vec_prev);  
-        mul(norm_vec, norm_vec, max_vec_prev);
+        if (j > 3) {
+            sub(max_vec_prev, max_vec_prev, max_vec); 
+            exp2(max_vec_prev, max_vec_prev);  
+            mul(norm_vec, norm_vec, max_vec_prev);
+        }
         col_sum(norm_vec, att_block[0], norm_vec);
         copy(att_block_bf16, att_block[0]);
         att_block_col_bf16 = *(attn_tile<D, bf16, col_l>*)(&att_block_bf16);
@@ -160,7 +164,9 @@ __global__ void attend_ker(const attn_globals<D> g) {
         //      A0V0
         asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_s_setprio(1);
-        mul_col(o_reg, o_reg, max_vec_prev);
+        if (j > 3) {
+            mul_col(o_reg, o_reg, max_vec_prev);
+        }
         mma_AtB(o_reg, v_reg, att_block_col_bf16, o_reg);
         //      Partial softmax for QK1
         copy(max_vec_prev, max_vec);
