@@ -62,6 +62,36 @@ struct test_mma_ABt {
     template<int H, int W, typename K> using make_b_layout = typename kittens::gl<kittens::bf16, 1, 1, 16*W, 16*K::value>;
     template<int H, int W, typename K> using make_c_layout = typename kittens::gl<kittens::bf16, 1, 1, 16*H, 16*W>;
 };
+struct test_mma_ABt_fp8 {
+    template<int H, int W, int NW, typename K> using valid = std::bool_constant<NW == 1 && (2*W*H+W*K::value*2+H*K::value*2)<=64>; // this is warp-level
+    static inline const std::string test_identifier = "reg_mma_ABt_fp8";
+    template<int H, int W, int NW, gl_t GTL_A, gl_t GTL_B, gl_t GTL_C, typename _K> __host__ static void host_func(const std::vector<float> &i_ref, std::vector<float> &o_ref) {
+        constexpr int K = _K::value;
+        for(int i = 0; i < H*16; i++) {
+            for(int j = 0; j < W*16; j++) {
+                float sum = 0;
+                for(int k = 0; k < K*32; k++) {
+                    sum += i_ref[i*K*32+k]*i_ref[512*K*H + j*K*32+k];
+                }
+                o_ref[i*W*16+j] = sum;
+            }
+        }
+    }
+    template<int H, int W, int NW, gl_t GTL_A, gl_t GTL_B, gl_t GTL_C, typename _K> __device__ static void device_func(const GTL_A &a_input, const GTL_B &b_input, const GTL_C &c_output) {
+        constexpr int K = _K::value;
+        kittens::rt_fp8e4m3<16*H, 32*K> a;
+        kittens::rt_fp8e4m3<16*W, 32*K> b;
+        kittens::rt_fl<16*H, 16*W, kittens::ducks::rt_layout::col> c;
+        kittens::load(a, a_input, {});
+        kittens::load(b, b_input, {});
+        kittens::zero(c);
+        kittens::mma_ABt(c, a, b, c);
+        kittens::store(c_output, c, {});
+    }
+    template<int H, int W, typename K> using make_a_layout = typename kittens::gl<kittens::fp8e4m3, 1, 1, 16*H, 32*K::value>;
+    template<int H, int W, typename K> using make_b_layout = typename kittens::gl<kittens::fp8e4m3, 1, 1, 16*W, 32*K::value>;
+    template<int H, int W, typename K> using make_c_layout = typename kittens::gl<kittens::bf16, 1, 1, 16*H, 16*W>;
+};
 struct test_mma_AtB {
     template<int H, int W, int NW, typename K> using valid = std::bool_constant<NW == 1 && (2*W*H+W*K::value+H*K::value)<=64>; // this is warp-level
     static inline const std::string test_identifier = "reg_mma_AtB";
@@ -128,46 +158,69 @@ template<typename Ker, typename T, int H, int W, int NW, gl_t GTL_A, gl_t GTL_B,
 static __global__ void mma_global_wrapper_2d(const GTL_A a_input, const GTL_B b_input, GTL_C c_output) {
     Ker::template device_func<H, W, NW, GTL_A, GTL_B, GTL_C, args...>(a_input, b_input, c_output);
 }
-template<typename test, int H, int W, int NUM_WORKERS, typename _K, typename... args>
-struct mma_wrapper_2d {
-    static void run(test_data& results) {
-        using namespace kittens;
-        constexpr int K = _K::value;
-        test_info this_result;
-        this_result.label = generate_test_name<H,W,NUM_WORKERS,_K,args...>(test::test_identifier);
-        if constexpr (test::template valid<H, W, NUM_WORKERS, _K, args...>::value) {
-            // initialize
-            kittens::bf16 *d_i, *d_o;
-            std::vector<float> i_ref((H+W)*K*256);
-            std::vector<float> o_ref(H*W*256);
-            initialize(&d_i, &d_o, i_ref, o_ref);
-            // make descriptors
-            using GTL_A = test::template make_a_layout<H, W, _K>;
-            using GTL_B = test::template make_b_layout<H, W, _K>;
-            using GTL_C = test::template make_c_layout<H, W, _K>;
-            GTL_A a_input (d_i,           nullptr, nullptr, nullptr, nullptr);
-            GTL_B b_input (d_i + H*K*256, nullptr, nullptr, nullptr, nullptr);
-            GTL_C c_output(d_o,           nullptr, nullptr, nullptr, nullptr);
-            // run kernel
-            hipFuncSetAttribute(
-                reinterpret_cast<void *>(mma_global_wrapper_2d<test, kittens::bf16, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...>),
-                hipFuncAttributeMaxDynamicSharedMemorySize,
-                kittens::MAX_SHARED_MEMORY
-            );
-            mma_global_wrapper_2d<test, kittens::bf16, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...><<<1, NUM_WORKERS*64, kittens::MAX_SHARED_MEMORY>>>(a_input, b_input, c_output);
-            // fill in correct results on cpu
-            test::template host_func<H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...>(i_ref, o_ref);
-            // check and cleanup
-            this_result.result = validate(d_i, d_o, i_ref, o_ref, this_result.label, W*16, 0.0625); // mma's sometimes produce small errors. this appears to be hardware.
+// Type wrapper template to separate I_T from other parameters
+template<typename I_T>
+struct mma_type_wrapper {
+    template<typename test, int H, int W, int NUM_WORKERS, typename _K, typename... args>
+    struct mma_wrapper_2d {
+        static void run(test_data& results) {
+            using namespace kittens;
+            constexpr int K = _K::value;
+            test_info this_result;
+            this_result.label = generate_test_name<H,W,NUM_WORKERS,_K,args...>(test::test_identifier);
+            if constexpr (test::template valid<H, W, NUM_WORKERS, _K, args...>::value) {
+                // initialize
+                I_T *d_i;
+                kittens::bf16 *d_o;
+                constexpr int rt_cols = (std::is_same_v<I_T, kittens::fp8e4m3>) ? 32 : 16;
+                std::vector<float> i_ref((H+W)*K*16*rt_cols);
+                std::vector<float> o_ref(H*W*256);
+                initialize<I_T, kittens::bf16>(&d_i, &d_o, i_ref, o_ref);
+                // make descriptors
+                using GTL_A = test::template make_a_layout<H, W, _K>;
+                using GTL_B = test::template make_b_layout<H, W, _K>;
+                using GTL_C = test::template make_c_layout<H, W, _K>;
+                GTL_A a_input (d_i,           nullptr, nullptr, nullptr, nullptr);
+                GTL_B b_input (d_i + H*K*16*rt_cols, nullptr, nullptr, nullptr, nullptr);
+                GTL_C c_output(d_o,           nullptr, nullptr, nullptr, nullptr);
+                // run kernel
+                hipFuncSetAttribute(
+                    reinterpret_cast<void *>(mma_global_wrapper_2d<test, I_T, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...>),
+                    hipFuncAttributeMaxDynamicSharedMemorySize,
+                    kittens::MAX_SHARED_MEMORY
+                );
+                mma_global_wrapper_2d<test, I_T, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...><<<1, NUM_WORKERS*64, kittens::MAX_SHARED_MEMORY>>>(a_input, b_input, c_output);
+                // fill in correct results on cpu
+                test::template host_func<H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...>(i_ref, o_ref);
+                // check and cleanup
+                this_result.result = validate(d_i, d_o, i_ref, o_ref, this_result.label, W*16, 0.0625); // mma's sometimes produce small errors. this appears to be hardware.
+            }
+            else {
+                this_result.result = test_result::INVALID;
+            }
+            results.push_back(this_result);
         }
-        else {
-            this_result.result = test_result::INVALID;
-        }
-        results.push_back(this_result);
-    }
+    };
 };
-template<typename test, int MAX_H=8, int MAX_W=8, int NUM_WORKERS=1, typename... args> using mma_sweep_size = loop_h<mma_wrapper_2d, test, MAX_H, MAX_W, NUM_WORKERS, MAX_H, args...>;
-template<typename test, int MAX_H=8, int MAX_W=8, typename... args> using mma_sweep_size_warp = mma_sweep_size<test, MAX_H, MAX_W, 1, args...>;
+// Type-parameterized aliases for different data types
+template<typename I_T, typename test, int MAX_H=8, int MAX_W=8, int NUM_WORKERS=1, typename... args>
+using mma_sweep_size_typed = loop_h<mma_type_wrapper<I_T>::template mma_wrapper_2d, test, MAX_H, MAX_W, NUM_WORKERS, MAX_H, args...>;
+
+template<typename I_T, typename test, int MAX_H=8, int MAX_W=8, typename... args>
+using mma_sweep_size_warp_typed = mma_sweep_size_typed<I_T, test, MAX_H, MAX_W, 1, args...>;
+
+template<typename test, int MAX_H=8, int MAX_W=8, int NUM_WORKERS=1, typename... args>
+using mma_sweep_size_fp8 = mma_sweep_size_typed<kittens::fp8e4m3, test, MAX_H, MAX_W, NUM_WORKERS, args...>;
+
+template<typename test, int MAX_H=8, int MAX_W=8, typename... args>
+using mma_sweep_size_warp_fp8 = mma_sweep_size_warp_typed<kittens::fp8e4m3, test, MAX_H, MAX_W, args...>;
+
+// Default is bf16
+template<typename test, int MAX_H=8, int MAX_W=8, int NUM_WORKERS=1, typename... args>
+using mma_sweep_size = mma_sweep_size_typed<kittens::bf16, test, MAX_H, MAX_W, NUM_WORKERS, args...>;
+
+template<typename test, int MAX_H=8, int MAX_W=8, typename... args>
+using mma_sweep_size_warp = mma_sweep_size_warp_typed<kittens::bf16, test, MAX_H, MAX_W, args...>;
 
 void warp::reg::tile::mma::tests(test_data &results) {
     std::cout << "\n ----- Starting ops/warp/register/tile/mma tests! -----\n" << std::endl;
@@ -192,6 +245,8 @@ void warp::reg::tile::mma::tests(test_data &results) {
     mma_sweep_size_warp<test_mma_AtBt, SIZE, SIZE, std::integral_constant<int, 2>>::run(results);
     mma_sweep_size_warp<test_mma_AtBt, SIZE, SIZE, std::integral_constant<int, 3>>::run(results);
     mma_sweep_size_warp<test_mma_AtBt, SIZE, SIZE, std::integral_constant<int, 4>>::run(results);
+    // fp8e4m3
+    mma_sweep_size_warp_fp8<test_mma_ABt_fp8, SIZE, SIZE, std::integral_constant<int, 1>>::run(results);
 }
 
 #endif

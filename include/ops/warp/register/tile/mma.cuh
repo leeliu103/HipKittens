@@ -101,9 +101,15 @@ __device__ static inline void mfma161632(      float2 (&D)[2],
                                          const fp8e4m3_4 (&A)[2],
                                          const fp8e4m3_4 (&B)[2],
                                          const float2 (&C)[2]) {
-    (*(float4*)D).data = {__builtin_amdgcn_mfma_f32_16x16x32_fp8_fp8(
+    (*(float4*)C).data = {__builtin_amdgcn_mfma_f32_16x16x32_fp8_fp8(
         (*(fp8e4m3_4*)A).__x,
         (*(fp8e4m3_4*)B).__x,
+        (*(float4*)C).data,
+        0, 0, 0
+    )};
+    (*(float4*)D).data = {__builtin_amdgcn_mfma_f32_16x16x32_fp8_fp8(
+        (*((fp8e4m3_4*)A + 1)).__x,
+        (*((fp8e4m3_4*)B + 1)).__x,
         (*(float4*)C).data,
         0, 0, 0
     )};

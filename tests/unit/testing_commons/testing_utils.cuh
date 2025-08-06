@@ -95,15 +95,15 @@ enum initializers {
     ARANGE = 1, // write an increasing sequence into i_ref and d_i arrays. useful for debugging memory movement.
     NONE   = 2  // use whatever values were already in i_ref. useful for detailed debugging.
 };
-template<typename T, initializers initializer=initializers::RANDOM, int SEED=42>
-void initialize(T **d_i, T **d_o, std::vector<float> &i_ref, std::vector<float> &o_ref) {
+template<typename T1, typename T2, initializers initializer=initializers::RANDOM, int SEED=42>
+void initialize(T1 **d_i, T2 **d_o, std::vector<float> &i_ref, std::vector<float> &o_ref) {
     using namespace kittens;
 
     const int input_size  = i_ref.size();
     const int output_size = o_ref.size();
 
     // Initialize matrices
-    std::vector<T> i_t(input_size);
+    std::vector<T1> i_t(input_size);
 
     std::mt19937 gen(SEED); // Standard mersenne_twister_engine
     std::uniform_real_distribution<float> dis(-1.0, 1.0);
@@ -118,19 +118,19 @@ void initialize(T **d_i, T **d_o, std::vector<float> &i_ref, std::vector<float> 
         else {
             f = i_ref[idx];
         }
-        if constexpr (std::is_same_v<T, bf16>) {
+        if constexpr (std::is_same_v<T1, bf16>) {
             i_t[idx] = __float2bfloat16(f); // fill in for transfer to device
             i_ref[idx] = __bfloat162float(i_t[idx]); // ensure lossiness of fp16 is captured on cpu
         }
-        else if constexpr (std::is_same_v<T, float>) {
+        else if constexpr (std::is_same_v<T1, float>) {
             i_t[idx] = f;
             i_ref[idx] = f;
         }
-        else if constexpr (std::is_same_v<T, half>) {
+        else if constexpr (std::is_same_v<T1, half>) {
             i_t[idx] = __float2half(f);
             i_ref[idx] = __half2float(i_t[idx]);
         }
-        else if constexpr (std::is_same_v<T, fp8e4m3>) {
+        else if constexpr (std::is_same_v<T1, fp8e4m3>) {
             i_t[idx] = __hip_fp8_e4m3_fnuz(f);
             i_ref[idx] = float(i_t[idx]);
         }
@@ -139,40 +139,45 @@ void initialize(T **d_i, T **d_o, std::vector<float> &i_ref, std::vector<float> 
         }
     }
 
-    hipMalloc(d_i, input_size  * sizeof(T));
-    hipMalloc(d_o, output_size * sizeof(T));
+    hipMalloc(d_i, input_size  * sizeof(T1));
+    hipMalloc(d_o, output_size * sizeof(T2));
     HipCheckError();
 
-    hipMemcpy(*d_i, i_t.data(), input_size * sizeof(T), hipMemcpyHostToDevice);
+    hipMemcpy(*d_i, i_t.data(), input_size * sizeof(T1), hipMemcpyHostToDevice);
     HipCheckError();
 }
+template<typename T, initializers initializer=initializers::RANDOM, int SEED=42>
+void initialize(T **d_i, T **d_o, std::vector<float> &i_ref, std::vector<float> &o_ref) {
+    initialize<T, T, initializer, SEED>(d_i, d_o, i_ref, o_ref);
+}
+
 extern int should_write_outputs;
-template<typename T>
-test_result validate(T *d_i, T *d_o, const std::vector<float> &i_ref, std::vector<float> &o_ref, std::string test_name, int cols, float eps=5e-2) { // default eps has to be fairly high due to lots of different types
+template<typename T1, typename T2>
+test_result validate(T1 *d_i, T2 *d_o, const std::vector<float> &i_ref, std::vector<float> &o_ref, std::string test_name, int cols, float eps=5e-2) { // default eps has to be fairly high due to lots of different types
     using namespace kittens;
     const int input_size  = i_ref.size();
     const int output_size = o_ref.size();
     // copy back
-    T* o_t = new T[output_size];
+    T2* o_t = new T2[output_size];
     float *o = new float[output_size];
     hipDeviceSynchronize();
     HipCheckError();
-    hipMemcpy(o_t, d_o, output_size * sizeof(T), hipMemcpyDeviceToHost);
+    hipMemcpy(o_t, d_o, output_size * sizeof(T2), hipMemcpyDeviceToHost);
     HipCheckError();
     for(int idx = 0; idx < output_size; idx++) {
-        if constexpr (std::is_same_v<T, bf16>) {
+        if constexpr (std::is_same_v<T2, bf16>) {
             o[idx] = __bfloat162float(o_t[idx]);
             o_ref[idx] = __bfloat162float(__float2bfloat16(o_ref[idx]));
         }
-        else if constexpr (std::is_same_v<T, half>) {
+        else if constexpr (std::is_same_v<T2, half>) {
             o[idx] = __half2float(o_t[idx]);
             o_ref[idx] = __half2float(__float2half(o_ref[idx]));
         }
-        else if constexpr(std::is_same_v<T, float>) {
+        else if constexpr(std::is_same_v<T2, float>) {
             o[idx] = o_t[idx];
             o_ref[idx] = o_ref[idx];
         }
-        else if constexpr (std::is_same_v<T, fp8e4m3>) {
+        else if constexpr (std::is_same_v<T2, fp8e4m3>) {
             o[idx] = float(o_t[idx]);
             o_ref[idx] = float(__hip_fp8_e4m3_fnuz(o_ref[idx]));
         }
@@ -224,4 +229,9 @@ test_result validate(T *d_i, T *d_o, const std::vector<float> &i_ref, std::vecto
     delete[] o_t, o;
     HipCheckError();
     return good ? test_result::PASSED : test_result::FAILED;
+}
+
+template<typename T>
+test_result validate(T *d_i, T *d_o, const std::vector<float> &i_ref, std::vector<float> &o_ref, std::string test_name, int cols, float eps=5e-2) {
+    return validate<T, T>(d_i, d_o, i_ref, o_ref, test_name, cols, eps);
 }
