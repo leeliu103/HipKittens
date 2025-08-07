@@ -57,6 +57,18 @@ __device__ static inline void mfma323216(      float2 (&D)[8],
         0, 0, 0
     );
 }
+
+__device__ static inline void mfma323264(      float2 (&D)[8],
+                                         const fp8e4m3_4 (&A)[8],
+                                         const fp8e4m3_4 (&B)[8],
+                                         const float2 (&C)[8]) {
+    (*(float4*)D).data = {__builtin_amdgcn_mfma_f32_32x32x64_fp8(
+        (*(fp8e4m3_4*)A).__x,
+        (*(fp8e4m3_4*)B).__x,
+        (*(float4*)C).data,
+        0, 0, 0
+    )};
+}
 #else
 __device__ static inline void mfma161616(      float2 (&D)[2],
                                          const half_2 (&A)[2],
@@ -178,6 +190,12 @@ __device__ static inline void mma_ABt_base(rt_base<float, ducks::rt_layout::accu
                                      const rt_base<bf16, ducks::rt_layout::row> &b, // in row-major mode
                                      const rt_base<float, ducks::rt_layout::accumulator> &c) {
     mfma323216(d.data, a.data, b.data, c.data);
+}
+__device__ static inline void mma_ABt_base(rt_base<float, ducks::rt_layout::accumulator> &d,
+                                     const rt_base<fp8e4m3, ducks::rt_layout::row> &a, // this is 32x64, with each thread taking 2x4x4 columns of one row
+                                     const rt_base<fp8e4m3, ducks::rt_layout::row> &b, // in row-major mode
+                                     const rt_base<float, ducks::rt_layout::accumulator> &c) {
+    mfma323264(d.data, a.data, b.data, c.data);
 }
 #else
 __device__ static inline void mma_ABt_base(rt_base<float, ducks::rt_layout::col> &d,
