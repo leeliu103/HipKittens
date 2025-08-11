@@ -19,9 +19,9 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
     using T = typename ST::dtype;
     const int row_stride = src.template stride<axis>();
     // we can handle this many rows each time we run a memcpy_async
-    constexpr int elem_per_memcpy = sizeof(float4)/sizeof(typename ST::dtype); // if bf16, then 16/2 = 8 
-    constexpr int elem_per_half_memcpy = sizeof(float2)/sizeof(typename ST::dtype); // if bf16, then 8/2 = 4
-    constexpr int memcpy_per_row = ST::cols / elem_per_memcpy; // if 64 columns, then 64/8 = 8
+    constexpr int elem_per_memcpy = sizeof(float4)/sizeof(typename ST::dtype); // if bf16, then 16/2 = 8. if fp8, then 16/1 = 16.
+    constexpr int elem_per_half_memcpy = sizeof(float2)/sizeof(typename ST::dtype); // if bf16, then 8/2 = 4. if fp8, then 8/1 = 8.
+    constexpr int memcpy_per_row = ST::cols / elem_per_memcpy; // if 64 columns, then 64/8 = 8 or 64/16 = 4
     constexpr int total_calls = (ST::cols * ST::rows + N_THREADS*elem_per_memcpy-1) / (N_THREADS*elem_per_memcpy); // round up
 
     coord<> unit_coord = idx.template unit_coord<axis, 3>();
