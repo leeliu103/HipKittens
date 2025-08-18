@@ -240,6 +240,7 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
     // Each threadblock computes 256x256 output tile
     constexpr int WARPS_COL = 2;
     constexpr int WARPS_ROW = 4;
+    constexpr int NUM_WARPS = WARPS_COL * WARPS_ROW;
     constexpr int BLOCK_SIZE_ROW = 256;
     constexpr int BLOCK_SIZE_COL = 256;
     constexpr int BLOCK_K = 64;
@@ -249,8 +250,8 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
     constexpr int k_iters = K / BLOCK_K; // K iterations
 
     // Shared memory tiles: 128x64 for A and B
-    __shared__ st<fp8e4m3, BLOCK_SIZE_ROW, BLOCK_K> As;
-    __shared__ st<fp8e4m3, BLOCK_SIZE_COL, BLOCK_K> Bs;
+    __shared__ st<fp8e4m3, BLOCK_SIZE_ROW, BLOCK_K> As[2];
+    __shared__ st<fp8e4m3, BLOCK_SIZE_COL, BLOCK_K> Bs[2];
 
     // Register tiles: 64x64 per warp
     rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_K> a;
@@ -272,27 +273,52 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
 
     zero(c);
 
+    // Two stage pipeline
+    if (2*warpid() / NUM_WARPS == 1) {
+        __builtin_amdgcn_s_barrier();
+    }
+
+    int curr = 0, next = 1;
+
+    load<2, false, kittens::ducks::rt_layout::row>(As[curr], A, {0, 0, block_row, 0});
+    load<2, false, kittens::ducks::rt_layout::row>(Bs[curr], B, {0, 0, block_col, 0});
+
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
     // Inner loop over K dimension
-    for (int k = 0; k < k_iters; k++) {
+    for (int k = 0; k < k_iters - 1; k++, curr ^= 1, next ^= 1) {
         // Cooperatively load 128x64 tiles into shared memory
         // All 4 warps participate in loading
-        load<2, false, kittens::ducks::rt_layout::row>(As, A, {0, 0, block_row, k});
-        load<2, false, kittens::ducks::rt_layout::row>(Bs, B, {0, 0, block_col, k});
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
+
+        auto as_subtile = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_K>(As[curr], {warp_m, 0});
+        load(a, as_subtile);
+        auto bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, BLOCK_K>(Bs[curr], {warp_n, 0});
+        load(b, bs_subtile);
+        load<2, false, kittens::ducks::rt_layout::row>(As[next], A, {0, 0, block_row, k + 1});
+        load<2, false, kittens::ducks::rt_layout::row>(Bs[next], B, {0, 0, block_col, k + 1});
 
         __builtin_amdgcn_s_barrier();  // synchronizes all warps
         __builtin_amdgcn_sched_barrier(0); // stops compiler from reordering ops
 
-        auto as_subtile = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_K>(As, {warp_m, 0});
-        auto bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, BLOCK_K>(Bs, {warp_n, 0});
-        load(a, as_subtile);
-        load(b, bs_subtile);
-
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
-
         // Compute: C += A * B^T
         mma_ABt(c, a, b, c);
     }
+
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+
+    auto as_subtile = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_K>(As[curr], {warp_m, 0});
+    load(a, as_subtile);
+    auto bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, BLOCK_K>(Bs[curr], {warp_n, 0});
+    load(b, bs_subtile);
+
+    __builtin_amdgcn_s_waitcnt(0);
+    __builtin_amdgcn_sched_barrier(0);
+
+    mma_ABt(c, a, b, c);
 
     // Store result: each warp stores its 64x64 result
     store(C, c, {0, 0, block_row * WARPS_ROW + warp_m, block_col * WARPS_COL + warp_n});
