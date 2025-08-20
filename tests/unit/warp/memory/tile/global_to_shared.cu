@@ -106,8 +106,8 @@ void warp::memory::tile::global_to_shared::tests(test_data &results) {
     g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I2_t, kittens::ducks::st_layout::col>::run(results);
     g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I1_t, kittens::ducks::st_layout::col>::run(results);
     g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I0_t, kittens::ducks::st_layout::col>::run(results);
-    g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I2_t, kittens::ducks::st_layout::accumulator>::run(results);
-    g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I1_t, kittens::ducks::st_layout::accumulator>::run(results);
-    g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I0_t, kittens::ducks::st_layout::accumulator>::run(results);
+    g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I2_t, kittens::ducks::st_layout::accumulator_col>::run(results);
+    g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I1_t, kittens::ducks::st_layout::accumulator_col>::run(results);
+    g2s_sweep_gmem_type_2d_warp<st_load_store, SIZE, SIZE, I0_t, kittens::ducks::st_layout::accumulator_col>::run(results);
 }
 #endif

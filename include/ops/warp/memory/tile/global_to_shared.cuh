@@ -91,7 +91,7 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
             const int col_offset = warp_col_offset + (laneid % 4) * elem_per_thread;
             const int row_offset = warp_row_offset + (laneid / 4);
             offset_in_global = (row_offset * row_stride + col_offset) * sizeof(T);
-        } else {
+        } else if constexpr (std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_col>) {
             const int register_subtile_rows = kittens::TILE_ROW_DIM<T> / num_register_subtiles;
             const int num_register_subtiles_per_row = num_register_tiles_per_row;
             const int warp_col_offset = (register_tile_id % num_register_subtiles_per_row) * kittens::TILE_COL_DIM<T>;
@@ -100,6 +100,8 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
             const int col_offset = warp_col_offset + (laneid % 4) * elem_per_thread;
             const int row_offset = warp_row_offset + get_accum_thread_row_offset(laneid / 4);
             offset_in_global = (row_offset * row_stride + col_offset) * sizeof(T);
+        } else {
+            static_assert(std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_row>, "Unsupported layout");
         }
 
         const T* lds_elem_ptr = lds_base + (i * N_THREADS * elem_per_thread);
@@ -176,7 +178,7 @@ __device__ inline void prefill_swizzled_offsets(
 
             const int offset_in_global = (row_offset * row_stride + col_offset) * sizeof(T);
             swizzled_offsets[i] = offset_in_global;
-        } else {
+        } else if constexpr (std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_col>) {
             const int register_subtile_rows = kittens::TILE_ROW_DIM<T> / num_register_subtiles;
             const int num_register_subtiles_per_row = num_register_tiles_per_row;
             const int warp_col_offset = (register_tile_id % num_register_subtiles_per_row) * kittens::TILE_COL_DIM<T>;
@@ -187,6 +189,8 @@ __device__ inline void prefill_swizzled_offsets(
 
             const int offset_in_global = (row_offset * row_stride + col_offset) * sizeof(T);
             swizzled_offsets[i] = offset_in_global;
+        } else {
+            static_assert(std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_row>, "Unsupported layout");
         }
     }
 }
@@ -375,7 +379,7 @@ __device__ static inline void store(const GL &dst, const ST &src, const COORD &i
             const int row_offset = warp_row_offset + (laneid / 4);
 
             offset_in_global = (row_offset * row_stride + col_offset);
-        } else {
+        } else if constexpr (std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_col>) {
             const int register_subtile_rows = kittens::TILE_ROW_DIM<T> / num_register_subtiles;
             const int num_register_subtiles_per_row = num_register_tiles_per_row;
             const int warp_col_offset = (register_tile_id % num_register_subtiles_per_row) * kittens::TILE_COL_DIM<T>;
@@ -385,6 +389,8 @@ __device__ static inline void store(const GL &dst, const ST &src, const COORD &i
             const int row_offset = warp_row_offset + get_accum_thread_row_offset(laneid / 4);
 
             offset_in_global = (row_offset * row_stride + col_offset);
+        } else {
+            static_assert(std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_row>, "Unsupported layout");
         }
 
         const T* lds_elem_ptr = lds_base + (i * N_THREADS * elem_per_thread);

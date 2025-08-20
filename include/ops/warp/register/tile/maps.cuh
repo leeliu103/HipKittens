@@ -159,7 +159,7 @@ __device__ static inline void row_map(T &dst, const T &src, const V &row_values)
     }
 }
 #ifdef KITTENS_CDNA4
-template<typename op, ducks::rt::accumulator_layout T, ducks::rv::all V>
+template<typename op, ducks::rt::accumulator_col_layout T, ducks::rv::all V>
 __device__ static inline void row_map(T &dst, const T &src, const V &row_values) {
 
     static_assert(std::is_same_v<typename V::dtype, typename T::dtype>); // compatible type
@@ -251,7 +251,7 @@ __device__ static inline void row_map(T &dst, const T &a, const T &b, const V &r
 }
 
 #ifdef KITTENS_CDNA4
-template<typename op, ducks::rt::accumulator_layout T, ducks::rv::all V>
+template<typename op, ducks::rt::accumulator_col_layout T, ducks::rv::all V>
 __device__ static inline void row_map(T &dst, const T &a, const T &b, const V &row_values) {
 
     static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout>::col_vec_layout>); // compatible layout
@@ -340,7 +340,7 @@ __device__ static inline void col_map(T &dst, const T &src, const V &col_values)
 }
 
 #ifdef KITTENS_CDNA4
-template<typename op, ducks::rt::accumulator_layout T, ducks::rv::all V>
+template<typename op, ducks::rt::accumulator_col_layout T, ducks::rv::all V>
 __device__ static inline void col_map(T &dst, const T &src, const V &col_values) {
 
     static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout>::row_vec_layout>); // compatible layout
@@ -432,7 +432,7 @@ __device__ static inline void col_map(T &dst, const T &a, const T &b, const V &c
 }
 
 #ifdef KITTENS_CDNA4
-template<typename op, ducks::rt::accumulator_layout T, ducks::rv::all V>
+template<typename op, ducks::rt::accumulator_col_layout T, ducks::rv::all V>
 __device__ static inline void col_map(T &dst, const T &a, const T &b, const V &col_values) {
 
     static_assert(std::is_same_v<typename V::dtype, typename T::dtype>); // compatible type

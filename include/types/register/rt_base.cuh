@@ -66,8 +66,8 @@ template<typename _T, ducks::rt_layout::all _layout> struct rt_base {
     static constexpr int packed_per_thread    = (elements_per_thread / base_types::packing<dtype>::num()) ; // 2
     static constexpr int registers_per_thread = packed_per_thread * sizeof(dtype) / 4; // 2 or 4, registers are 32-bit words
 
-    using row_vec_layout = std::conditional_t<std::is_same_v<layout, ducks::rt_layout::row>, ducks::rv_layout::align, ducks::rv_layout::ortho>; // for holding column reductions
-    using col_vec_layout = std::conditional_t<std::is_same_v<layout, ducks::rt_layout::row>, ducks::rv_layout::ortho, ducks::rv_layout::align>; // for holding row reductions
+    using row_vec_layout = std::conditional_t<std::is_same_v<layout, ducks::rt_layout::row> || std::is_same_v<layout, ducks::rt_layout::accumulator_row>, ducks::rv_layout::align, ducks::rv_layout::ortho>; // for holding column reductions
+    using col_vec_layout = std::conditional_t<std::is_same_v<layout, ducks::rt_layout::row> || std::is_same_v<layout, ducks::rt_layout::accumulator_row>, ducks::rv_layout::ortho, ducks::rv_layout::align>; // for holding row reductions
 
     dtype data[packed_per_thread]; ///< The actual storage for the base tile
 };

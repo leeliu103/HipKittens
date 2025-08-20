@@ -33,7 +33,8 @@ __device__ inline static void load(RT &dst, const ST &src) {
     static_assert(RT::width  == ST::width,  "register tile and shared tile must match width");
     static_assert((std::is_same_v<typename RT::layout, ducks::rt_layout::row> && std::is_same_v<typename ST::layout, ducks::st_layout::row>) 
     || (std::is_same_v<typename RT::layout, ducks::rt_layout::col> && std::is_same_v<typename ST::layout, ducks::st_layout::col>)
-    || (std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator> && std::is_same_v<typename ST::layout, ducks::st_layout::accumulator>), "register tile and shared tile layout must match");
+    || (std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_col> && std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_col>
+    || (std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_row> && std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_row>)), "register tile and shared tile layout must match");
 
     // TODO: add support for fp8
     using T2 = RT::dtype;
@@ -48,7 +49,7 @@ __device__ inline static void load(RT &dst, const ST &src) {
     const int tile_stride = subtile_stride * 2;
     const int row_stride = tile_stride * ST::underlying_width;
 
-    if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) {
+    if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row> || std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_row>) {
         const int subtile_id = (laneid % 32) / 16;
         const int lane_col_byte_offset = (laneid / 32) * 16;
         const int lane_row_offset = (laneid % 16);
@@ -82,7 +83,7 @@ __device__ inline static void load(RT &dst, const ST &src) {
             }
         }
     }
-    else {
+    else if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::col> || std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_col>) {
         const int row_offset = (laneid % 16) / 4 + (laneid / 32) * 8;
         const int col_offset = ((laneid % 4) * 4) + 16*((laneid % 32)/16);
         const int subtile_offset = row_offset * kittens::TILE_ROW_DIM<U> + col_offset;
@@ -108,6 +109,8 @@ __device__ inline static void load(RT &dst, const ST &src) {
                 }
             }
         }
+    } else {
+        static_assert(std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_col>, "Unsupported layout");
     }
 }
 #else
@@ -183,7 +186,8 @@ __device__ inline static void store(ST &dst, const RT &src) {
     static_assert(RT::width  == ST::width,  "register tile and shared tile must match width");
     static_assert((std::is_same_v<typename RT::layout, ducks::rt_layout::row> && std::is_same_v<typename ST::layout, ducks::st_layout::row>) 
     || (std::is_same_v<typename RT::layout, ducks::rt_layout::col> && std::is_same_v<typename ST::layout, ducks::st_layout::col>)
-    || (std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator> && std::is_same_v<typename ST::layout, ducks::st_layout::accumulator>), "register tile and shared tile layout must match");
+    || (std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_col> && std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_col>
+    || (std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_row> && std::is_same_v<typename ST::layout, ducks::st_layout::accumulator_row>)), "register tile and shared tile layout must match");
 
     using T2 = RT::dtype;
     using T  = base_types::packing<T2>::unpacked_type;
@@ -197,7 +201,7 @@ __device__ inline static void store(ST &dst, const RT &src) {
     const int tile_stride = subtile_stride * 2;
     const int row_stride = tile_stride * ST::underlying_width;
 
-    if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) {
+    if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row> || std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_row>) {
         const int subtile_id = (laneid % 32) / 16;
         const int lane_col_byte_offset = (laneid / 32) * 16;
         const int lane_row_offset = (laneid % 16);
@@ -261,7 +265,7 @@ __device__ inline static void store(ST &dst, const RT &src) {
             }
         }
     }
-    else {
+    else if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::col> || std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_col>) {
         const int row_offset = 8*(laneid/32);
         const int col_offset = laneid%32;
         const uint32_t addr = row_offset * kittens::TILE_ROW_DIM<U> + col_offset;
@@ -293,6 +297,9 @@ __device__ inline static void store(ST &dst, const RT &src) {
                 }
             }
         }
+    }
+    else {
+        static_assert(std::is_same_v<typename RT::layout, ducks::rt_layout::accumulator_col>, "Unsupported layout");
     }
 }
 #else

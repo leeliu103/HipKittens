@@ -27,9 +27,13 @@ struct col {}; // for the B-matrix of MMA ops.
 
 #ifdef KITTENS_CDNA4
 /**
- * @brief A dummy type used to identify a 32x32 layout for a register tile.
+ * @brief A dummy type used to identify an accumulator col-major layout for a register tile.
  */
-struct accumulator {};
+struct accumulator_col {};
+/**
+ * @brief A dummy type used to identify an accumulator row-major layout for a register tile.
+ */
+ struct accumulator_row {};
 #endif
 
 /**
@@ -38,11 +42,11 @@ struct accumulator {};
 
 #ifdef KITTENS_CDNA4
 template<typename T>
-concept accum = std::is_same_v<T, accumulator>;
+concept accum = std::is_same_v<T, accumulator_col> || std::is_same_v<T, accumulator_row>;
 template<typename T>
 concept classic = std::is_same_v<T, row> || std::is_same_v<T, col>;
 template<typename T>
-concept all = std::is_same_v<T, row> || std::is_same_v<T, col> || std::is_same_v<T, accumulator>;
+concept all = std::is_same_v<T, row> || std::is_same_v<T, col> || std::is_same_v<T, accumulator_col> || std::is_same_v<T, accumulator_row>;
 #else
 template<typename T>
 concept all = std::is_same_v<T, row> || std::is_same_v<T, col>;
@@ -55,7 +59,8 @@ concept all = std::is_same_v<T, row> || std::is_same_v<T, col>;
 template<all L> struct transpose      { using type = col; };
 template<>      struct transpose<col> { using type = row; };
 #ifdef KITTENS_CDNA4
-template<>      struct transpose<accumulator> { using type = accumulator; };
+template<>      struct transpose<accumulator_col> { using type = accumulator_row; };
+template<>      struct transpose<accumulator_row> { using type = accumulator_col; };
 #endif
 
 } // namespace rt_layout

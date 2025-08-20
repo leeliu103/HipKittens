@@ -53,7 +53,8 @@ using col_vec = T::col_vec;
 using row_l = ducks::rt_layout::row;
 using col_l = ducks::rt_layout::col;
 #ifdef KITTENS_CDNA4
-using accum_l = ducks::rt_layout::accumulator;
+using accum_col_l = ducks::rt_layout::accumulator_col;
+using accum_row_l = ducks::rt_layout::accumulator_row;
 #endif
 
 // register vector layouts

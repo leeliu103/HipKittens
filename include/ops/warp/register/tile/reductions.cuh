@@ -153,7 +153,7 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
 }
 
 #ifdef KITTENS_CDNA4
-template<typename op, ducks::rv::all V, ducks::rt::accumulator_layout T, bool reset>
+template<typename op, ducks::rv::all V, ducks::rt::accumulator_col_layout T, bool reset>
 __device__ static inline void row_reduce(V &row_accum, const T &src, const V &src_accum) {
     // I actually like these static asserts because they give more verbose errors when things go wrong.
     static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout>::col_vec_layout>); // compatible layout
@@ -329,7 +329,7 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
 }
 
 #ifdef KITTENS_CDNA4
-template<typename op, ducks::rv::all V, ducks::rt::accumulator_layout T, bool reset>
+template<typename op, ducks::rv::all V, ducks::rt::accumulator_col_layout T, bool reset>
 __device__ static inline void col_reduce(V &col_accum, const T &src, const V &src_accum) {
 
     typedef unsigned int  uint32_t;

@@ -25,15 +25,19 @@ struct row {}; // for most matrices
  */
 struct col {}; // for the B-matrix of MMA ops.
 /**
- * @brief A dummy type used to identify an accumulator layout for a shared memory tile.
+ * @brief A dummy type used to identify an accumulator col-major layout for a shared memory tile.
  */
-struct accumulator {};
+struct accumulator_col {};
+/**
+ * @brief A dummy type used to identify an accumulator row-major layout for a shared memory tile.
+ */
+struct accumulator_row {};
 
 /**
  * @brief A concept to check if a type is a shared memory tile layout.
  */
 template<typename T>
-concept all = std::is_same_v<T, row> || std::is_same_v<T, col> || std::is_same_v<T, accumulator>;
+concept all = std::is_same_v<T, row> || std::is_same_v<T, col> || std::is_same_v<T, accumulator_col> || std::is_same_v<T, accumulator_row>;
 
 } // namespace st_layout
 } // namespace ducks

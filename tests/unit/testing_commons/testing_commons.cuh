@@ -32,7 +32,8 @@ template<int S, int NW, kittens::ducks::rt_layout::all L> std::string generate_t
     std::string label = generate_test_name<S,NW>(test_id);
     if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::row>) label += "_[rt_row_layout]";
     #ifdef KITTENS_CDNA4
-    else if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::accumulator>) label += "_[rt_accumulator_layout]";
+    else if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::accumulator_col>) label += "_[rt_accumulator_col_layout]";
+    else if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::accumulator_row>) label += "_[rt_accumulator_row_layout]";
     #endif
     else label += "_[rt_col_layout]";
     return label;
@@ -41,7 +42,8 @@ template<int S, int NW, kittens::ducks::rt_layout::all L1, kittens::ducks::rt_la
     std::string label = generate_test_name<S,NW,L1>(test_id);
     if constexpr (std::is_same_v<L2, kittens::ducks::rt_layout::row>) label += "_[rt_row_layout]";
     #ifdef KITTENS_CDNA4
-    else if constexpr (std::is_same_v<L2, kittens::ducks::rt_layout::accumulator>) label += "_[rt_accumulator_layout]";
+    else if constexpr (std::is_same_v<L2, kittens::ducks::rt_layout::accumulator_col>) label += "_[rt_accumulator_col_layout]";
+    else if constexpr (std::is_same_v<L2, kittens::ducks::rt_layout::accumulator_row>) label += "_[rt_accumulator_row_layout]";
     #endif
     else label += "_[rt_col_layout]";
     return label;
@@ -79,7 +81,8 @@ template<int H, int W, int NW, integral_wrapper _K, kittens::ducks::st_layout::a
     }
     if constexpr (std::is_same_v<L, kittens::ducks::st_layout::row>) label += "_[st_row_layout]";
     #ifdef KITTENS_CDNA4
-    else if constexpr (std::is_same_v<L, kittens::ducks::st_layout::accumulator>) label += "_[st_accumulator_layout]";
+    else if constexpr (std::is_same_v<L, kittens::ducks::st_layout::accumulator_col>) label += "_[st_accumulator_col_layout]";
+    else if constexpr (std::is_same_v<L, kittens::ducks::st_layout::accumulator_row>) label += "_[st_accumulator_row_layout]";
     #endif
     else label += "_[st_col_layout]";
     return label;
@@ -88,12 +91,14 @@ template<int H, int W, int NW, kittens::ducks::st_layout::all SL, kittens::ducks
     std::string label = generate_test_name<H,W,NW>(test_id);
     if constexpr (std::is_same_v<SL, kittens::ducks::st_layout::row>) label += "_[st_row_layout]";
     #ifdef KITTENS_CDNA4
-    else if constexpr (std::is_same_v<SL, kittens::ducks::st_layout::accumulator>) label += "_[st_accumulator_layout]";
+    else if constexpr (std::is_same_v<SL, kittens::ducks::st_layout::accumulator_col>) label += "_[st_accumulator_col_layout]";
+    else if constexpr (std::is_same_v<SL, kittens::ducks::st_layout::accumulator_row>) label += "_[st_accumulator_row_layout]";
     #endif
     else label += "_[st_col_layout]";
     if constexpr (std::is_same_v<RL, kittens::ducks::rt_layout::row>) label += "_[rt_row_layout]";
     #ifdef KITTENS_CDNA4
-    else if constexpr (std::is_same_v<RL, kittens::ducks::rt_layout::accumulator>) label += "_[rt_accumulator_layout]";
+    else if constexpr (std::is_same_v<RL, kittens::ducks::rt_layout::accumulator_col>) label += "_[rt_accumulator_col_layout]";
+    else if constexpr (std::is_same_v<RL, kittens::ducks::rt_layout::accumulator_row>) label += "_[rt_accumulator_row_layout]";
     #endif
     else label += "_[rt_col_layout]";
     return label;
@@ -102,7 +107,8 @@ template<int H, int W, int NW, kittens::ducks::rt_layout::all L> std::string gen
     std::string label = generate_test_name<H,W,NW>(test_id);
     if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::row>) label += "_[rt_row_layout]";
     #ifdef KITTENS_CDNA4
-    else if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::accumulator>) label += "_[rt_accumulator_layout]";
+    else if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::accumulator_col>) label += "_[rt_accumulator_col_layout]";
+    else if constexpr (std::is_same_v<L, kittens::ducks::rt_layout::accumulator_row>) label += "_[rt_accumulator_row_layout]";
     #endif
     else label += "_[rt_col_layout]";
     return label;
