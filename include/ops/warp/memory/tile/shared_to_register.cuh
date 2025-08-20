@@ -42,7 +42,7 @@ __device__ inline static void load(RT &dst, const ST &src) {
 
     const int subtile_stride = kittens::TILE_ROW_DIM<U> * kittens::TILE_COL_DIM<U> * sizeof(U) / 2;
     const int tile_stride = subtile_stride * 2;
-    const int row_stride = tile_stride * dst.width;
+    const int row_stride = tile_stride * ST::underlying_width;
 
     uint32_t addr;
 
