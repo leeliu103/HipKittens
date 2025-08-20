@@ -55,11 +55,11 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
     
     constexpr int elem_per_thread = bytes_per_thread / sizeof(T);  // 8 if bf16, 16 if fp8
     constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS; // 512 if bf16, 1024 if fp8
+    constexpr int num_warps = N_THREADS / kittens::WARP_THREADS;
     const int laneid = kittens::laneid() % N_THREADS;
-    const int warp_id = laneid / N_THREADS;
+    const int warp_id = kittens::warpid() % num_warps;
     const int row_stride = src.template stride<axis>();
 
-    constexpr int num_warps = N_THREADS / kittens::WARP_THREADS;
     constexpr int num_register_subtiles = kittens::TILE_ROW_DIM<T> * kittens::TILE_COL_DIM<T> / elem_per_warp;
     constexpr int num_register_tiles_per_row = ST::cols / kittens::TILE_ROW_DIM<T>;
 
@@ -144,11 +144,12 @@ __device__ inline void prefill_swizzled_offsets(
     
     constexpr int elem_per_thread = bytes_per_thread / sizeof(T);  // 8
     constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS; // 512
+    constexpr int num_warps = N_THREADS / kittens::WARP_THREADS;
     const int laneid = kittens::laneid() % N_THREADS;
-    const int warp_id = laneid / N_THREADS;
+    const int warp_id = kittens::warpid() % num_warps;
     const int row_stride = src.template stride<axis>();
 
-    constexpr int num_warps = N_THREADS / 64;
+
     constexpr int num_register_subtiles = kittens::TILE_ROW_DIM<T> * kittens::TILE_COL_DIM<T> / elem_per_warp;
     constexpr int num_register_tiles_per_row = ST::cols / kittens::TILE_ROW_DIM<T>;
 
@@ -336,13 +337,14 @@ __device__ static inline void store(const GL &dst, const ST &src, const COORD &i
     constexpr int memcpy_per_tile =  ST::rows * ST::cols * sizeof(T) / (bytes_per_thread * N_THREADS); // 16 --> 32
     static_assert(memcpy_per_tile > 0, "memcpy_per_tile must be greater than 0. Please decrease the number of threads.");
 
-    const int laneid = kittens::laneid() % N_THREADS;
     const int elem_per_thread = bytes_per_thread / sizeof(T); // 8 
     constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS; // 512
-    const int warp_id = laneid / N_THREADS;
+    constexpr int num_warps = N_THREADS / kittens::WARP_THREADS;
+    
+    const int laneid = kittens::laneid() % N_THREADS;
+    const int warp_id = kittens::warpid() % num_warps;
     const int row_stride = dst.template stride<axis>();
 
-    constexpr int num_warps = N_THREADS / kittens::WARP_THREADS;
     constexpr int num_register_subtiles = kittens::TILE_ROW_DIM<T> * kittens::TILE_COL_DIM<T> / elem_per_warp;
     constexpr int num_register_tiles_per_row = ST::cols / kittens::TILE_ROW_DIM<T>;
 
