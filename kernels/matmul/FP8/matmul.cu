@@ -280,13 +280,14 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
     // Two stage pipeline
     if (2*warpid() / NUM_WARPS == 1) {
         __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
     }
+
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
 
     // Inner loop over K dimension
     for (int k = 0; k < k_iters - 1; k++, curr ^= 1, next ^= 1) {
-
-        __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
 
         load<2, false, kittens::ducks::rt_layout::row, st<fp8e4m3, BLOCK_SIZE_ROW, BLOCK_K>, kittens::gl<fp8e4m3, 1, 1, M, K>, coord<st<fp8e4m3, BLOCK_SIZE_ROW, BLOCK_K>>, NUM_WARPS*WARP_THREADS>(As[next], A, {0, 0, block_row, k + 1});
         load<2, false, kittens::ducks::rt_layout::row, st<fp8e4m3, BLOCK_SIZE_COL, BLOCK_K>, kittens::gl<fp8e4m3, 1, 1, N, K>, coord<st<fp8e4m3, BLOCK_SIZE_COL, BLOCK_K>>, NUM_WARPS*WARP_THREADS>(Bs[next], B, {0, 0, block_col, k + 1});
@@ -296,11 +297,13 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
         load(b, bs_subtile);
 
         asm volatile("s_waitcnt lgkmcnt(0)");
-        __builtin_amdgcn_s_barrier();  // synchronizes all warps
+        __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0); // stops compiler from reordering ops
 
         // Compute: C += A * B^T
+        __builtin_amdgcn_s_setprio(1);
         mma_ABt(c, a, b, c);
+        __builtin_amdgcn_s_setprio(0);
 
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
@@ -315,7 +318,12 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
         __builtin_amdgcn_sched_barrier(0); // stops compiler from reordering ops
 
         // Compute: C += A * B^T
+        __builtin_amdgcn_s_setprio(1);
         mma_ABt(c, a, b, c);
+        __builtin_amdgcn_s_setprio(0);
+
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
     }
 
     __builtin_amdgcn_s_waitcnt(0);
@@ -327,8 +335,8 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
     auto bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[curr], {warp_n, 0});
     load(b, bs_subtile);
 
-    asm volatile("s_waitcnt lgkmcnt(0)");
     __builtin_amdgcn_s_barrier();
+    asm volatile("s_waitcnt lgkmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
 
     mma_ABt(c, a, b, c);
@@ -341,6 +349,7 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
     bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[curr], {warp_n, 1});
     load(b, bs_subtile);
 
+    __builtin_amdgcn_s_barrier();
     asm volatile("s_waitcnt lgkmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
 
