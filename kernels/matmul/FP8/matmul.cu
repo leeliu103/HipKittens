@@ -315,7 +315,7 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
     constexpr int BLOCK_SIZE_ROW = 256;
     constexpr int BLOCK_SIZE_COL = 256;
     constexpr int BLOCK_K = 128;
-    constexpr int k_step = BLOCK_K;
+    constexpr int k_step = BLOCK_K/2;
     constexpr int blocks_row = M / BLOCK_SIZE_ROW; // Number of blocks along output matrix row dim
     constexpr int blocks_col = N / BLOCK_SIZE_COL; // Number of blocks along output matrix col dim
     constexpr int total_blocks_needed = blocks_row * blocks_col;
@@ -326,6 +326,8 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
 
     rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, k_step> a;
     rt_fp8e4m3<BLOCK_SIZE_COL / WARPS_COL, k_step> b;
+    rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, k_step> aa;
+    rt_fp8e4m3<BLOCK_SIZE_COL / WARPS_COL, k_step> bb;
     rt_fl<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_SIZE_COL / WARPS_COL, kittens::ducks::rt_layout::accumulator> c;
 
     int global_block_id = blockIdx.x;
@@ -384,12 +386,19 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
         auto bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[curr], {warp_n, 0});
         load(b, bs_subtile);
 
+        auto as_subtile1 = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, k_step>(As[curr], {warp_m, 1});
+        load(aa, as_subtile1);
+        auto bs_subtile1 = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[curr], {warp_n, 1});
+        load(bb, bs_subtile1);
+
         asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_sched_barrier(0);
 
         // Compute: C += A * B^T
         __builtin_amdgcn_s_setprio(1);
         mma_ABt(c, a, b, c);
+        __builtin_amdgcn_sched_barrier(0);
+        mma_ABt(c, aa, bb, c);
         __builtin_amdgcn_s_setprio(0);
 
         __builtin_amdgcn_s_waitcnt(0);
@@ -402,12 +411,19 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
     auto bs_subtile = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[curr], {warp_n, 0});
     load(b, bs_subtile);
 
+    auto as_subtile1 = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, k_step>(As[curr], {warp_m, 1});
+    load(aa, as_subtile1);
+    auto bs_subtile1 = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[curr], {warp_n, 1});
+    load(bb, bs_subtile1);
+
     asm volatile("s_waitcnt lgkmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
 
     // Compute: C += A * B^T
     __builtin_amdgcn_s_setprio(1);
     mma_ABt(c, a, b, c);
+    __builtin_amdgcn_sched_barrier(0);
+    mma_ABt(c, aa, bb, c);
     __builtin_amdgcn_s_setprio(0);
 
     // Store result: each warp stores its 64x64 result
