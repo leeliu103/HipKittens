@@ -307,14 +307,20 @@ TimingResult matmul_ref(const std::vector<fp8e4m3>& a, const std::vector<fp8e4m3
 
 #endif
 
-template <typename T, int N_THREADS>
-__device__ inline void buffer_load_lds(int i, int warp_id, int laneid, const T* lds_base, 
-    i32x4 srsrc, int row_stride, int num_warps, 
-    int num_register_subtiles, int num_register_tiles_per_row,
-    int num_register_subtiles_per_row, int register_subtile_cols,
-    int elem_per_thread) {
-    int col_offset = (((((warp_id + i * num_warps) / num_register_subtiles) % num_register_tiles_per_row) * num_register_subtiles + ((warp_id + i * num_warps) % num_register_subtiles)) * register_subtile_cols) + (laneid / kittens::TILE_ROW_DIM<T>) * elem_per_thread;
-    int row_offset = ((((warp_id + i * num_warps) / num_register_subtiles) / num_register_tiles_per_row) * kittens::TILE_ROW_DIM<T>) + (laneid % kittens::TILE_ROW_DIM<T>);
+template <typename T, typename ST, int N_THREADS>
+__device__ inline void buffer_load_lds(int i, const T* lds_base, i32x4 srsrc, int row_stride) {
+    constexpr int memcpy_per_tile =  ST::rows * ST::cols * sizeof(fp8e4m3) / (16 * N_THREADS); // 8
+    static_assert(memcpy_per_tile > 0, "memcpy_per_tile must be greater than 0. Please decrease the number of threads.");
+
+    constexpr int num_warps = N_THREADS / WARP_THREADS;
+    constexpr int elem_per_thread = 16 / sizeof(fp8e4m3);
+    constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS;
+    constexpr int num_register_subtiles = kittens::TILE_ROW_DIM<T> * kittens::TILE_COL_DIM<T> / elem_per_warp;
+    constexpr int num_register_tiles_per_row = ST::cols / kittens::TILE_COL_DIM<T>;
+    constexpr int register_subtile_cols = kittens::TILE_COL_DIM<T> / num_register_subtiles;
+    constexpr int num_register_subtiles_per_row = num_register_tiles_per_row * num_register_subtiles;
+    int col_offset = (((((warpid() + i * num_warps) / num_register_subtiles) % num_register_tiles_per_row) * num_register_subtiles + ((warpid() + i * num_warps) % num_register_subtiles)) * register_subtile_cols) + (laneid() / kittens::TILE_ROW_DIM<T>) * elem_per_thread;
+    int row_offset = ((((warpid() + i * num_warps) / num_register_subtiles) / num_register_tiles_per_row) * kittens::TILE_ROW_DIM<T>) + (laneid() % kittens::TILE_ROW_DIM<T>);
     as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(reinterpret_cast<uintptr_t>((lds_base + (i * N_THREADS * elem_per_thread))));
 
     llvm_amdgcn_raw_buffer_load_lds(
@@ -325,6 +331,24 @@ __device__ inline void buffer_load_lds(int i, int warp_id, int laneid, const T* 
     0, 
     0, // instruction offset
     static_cast<index_t>(coherency::cache_all)); // cache coherency
+}
+
+template<typename RT, typename ST, typename U>
+__device__ inline void ds_read_128_bits(RT& dst, uint32_t addr, int i, int j, int k) {
+    static_assert(RT::height == ST::height, "register tile and shared tile must match height");
+    static_assert(RT::width  == ST::width,  "register tile and shared tile must match width");
+    using T  = base_types::packing<typename RT::dtype>::unpacked_type;
+    static_assert(sizeof(U) == 2 || sizeof(U) == 1, "only supporting 16 and 8-bit dtypes");
+    static_assert((!std::is_same_v<T, fp8e4m3>) || std::is_same_v<U, T>, "global and shared tile must have the same dtype if fp8");
+    constexpr int subtile_stride = kittens::TILE_ROW_DIM<U> * kittens::TILE_COL_DIM<U> * sizeof(U) / 2;
+    constexpr int tile_stride = subtile_stride * 2;
+    constexpr int row_stride = tile_stride * ST::underlying_width;
+    asm volatile(
+        "ds_read_b128 %0, %1 offset:%2\n"
+        : "=v"(*reinterpret_cast<float4*>(&dst.tiles[i][j].data[k*4]))
+        : "v"(addr), "i"(i * row_stride + j * tile_stride + k * subtile_stride)
+        : "memory"
+    );
 }
 
 template <int M, int N, int K>
@@ -348,13 +372,16 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
     using GL_B = kittens::gl<fp8e4m3, 1, 1, N, K>;
     using GL_C = kittens::gl<bf16, 1, 1, M, N>;
 
+    using RT_A = rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, k_step>; // 128x128
+    using RT_B = rt_fp8e4m3<BLOCK_SIZE_COL / WARPS_COL, k_step>; // 128x128
+
     __shared__ ST_A As[2];
     __shared__ ST_B Bs[2];
 
-    rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, k_step> a;
-    rt_fp8e4m3<BLOCK_SIZE_COL / WARPS_COL, k_step> b;
-    rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, k_step> a_temp;
-    rt_fp8e4m3<BLOCK_SIZE_COL / WARPS_COL, k_step> b_temp;
+    RT_A a;
+    RT_B b;
+    RT_A a_temp;
+    RT_B b_temp;
     rt_fl<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_SIZE_COL / WARPS_COL, kittens::ducks::rt_layout::accumulator> c;
 
     int global_block_id = blockIdx.x;
@@ -435,65 +462,28 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
             const coord<ST>& idx = {0, 0, block_row, k + 2};
             constexpr int N_THREADS = NUM_WARPS*WARP_THREADS;
 
-            constexpr int memcpy_per_tile =  ST::rows * ST::cols * sizeof(fp8e4m3) / (16 * N_THREADS); // 8
-            static_assert(memcpy_per_tile > 0, "memcpy_per_tile must be greater than 0. Please decrease the number of threads.");
-            constexpr int elem_per_thread = 16 / sizeof(fp8e4m3); // 16
-            constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS; // 1024
-            const int laneid = kittens::laneid();
-            const int warp_id = warpid();
             const int row_stride = src.template stride<2>();
-
-            constexpr int num_warps = NUM_WARPS;
-            constexpr int num_register_subtiles = kittens::TILE_ROW_DIM<T> * kittens::TILE_COL_DIM<T> / elem_per_warp;
-            constexpr int num_register_tiles_per_row = ST::cols / kittens::TILE_COL_DIM<T>;
-            constexpr int register_subtile_cols = kittens::TILE_COL_DIM<T> / num_register_subtiles;
-            constexpr int num_register_subtiles_per_row = num_register_tiles_per_row * num_register_subtiles;
-
             coord<> unit_coord = idx.template unit_coord<2, 3>();
             T* global_ptr = (T*)&src[unit_coord];
             i32x4 srsrc = make_srsrc(global_ptr, row_stride * ST::rows * sizeof(T));
+            constexpr int elem_per_warp = (16 / sizeof(fp8e4m3)) * kittens::WARP_THREADS; // 1024
+            const T* lds_base = &dst.data[0] + (warpid() * elem_per_warp);
 
-            const T* lds_base = &dst.data[0] + (warp_id * elem_per_warp);
+            buffer_load_lds<T, ST, N_THREADS>(0, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(0, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                num_register_subtiles, num_register_tiles_per_row, 
-                num_register_subtiles_per_row, register_subtile_cols,
-                elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(1, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(1, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(2, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(2, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(3, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(3, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(4, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(4, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(5, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(5, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(6, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(6, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
-
-            buffer_load_lds<T, N_THREADS>(7, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(7, lds_base, srsrc, row_stride);
         }
 
         {
@@ -507,70 +497,65 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
             const coord<ST>& idx = {0, 0, block_col, k + 2};
             constexpr int N_THREADS = NUM_WARPS*WARP_THREADS;
 
-            constexpr int memcpy_per_tile =  ST::rows * ST::cols * sizeof(fp8e4m3) / (16 * N_THREADS); // 8
-            static_assert(memcpy_per_tile > 0, "memcpy_per_tile must be greater than 0. Please decrease the number of threads.");
-            constexpr int elem_per_thread = 16 / sizeof(fp8e4m3); // 16
-            constexpr int elem_per_warp = elem_per_thread * kittens::WARP_THREADS; // 1024
-            const int laneid = kittens::laneid();
-            const int warp_id = warpid();
             const int row_stride = src.template stride<2>();
-
-            constexpr int num_warps = NUM_WARPS;
-            constexpr int num_register_subtiles = kittens::TILE_ROW_DIM<T> * kittens::TILE_COL_DIM<T> / elem_per_warp;
-            constexpr int num_register_tiles_per_row = ST::cols / kittens::TILE_COL_DIM<T>;
-            constexpr int register_subtile_cols = kittens::TILE_COL_DIM<T> / num_register_subtiles;
-            constexpr int num_register_subtiles_per_row = num_register_tiles_per_row * num_register_subtiles;
-
             coord<> unit_coord = idx.template unit_coord<2, 3>();
             T* global_ptr = (T*)&src[unit_coord];
             i32x4 srsrc = make_srsrc(global_ptr, row_stride * ST::rows * sizeof(T));
+            constexpr int elem_per_warp = (16 / sizeof(fp8e4m3)) * kittens::WARP_THREADS; // 1024
+            const T* lds_base = &dst.data[0] + (warpid() * elem_per_warp);
 
-            const T* lds_base = &dst.data[0] + (warp_id * elem_per_warp);
+            buffer_load_lds<T, ST, N_THREADS>(0, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(0, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                num_register_subtiles, num_register_tiles_per_row, 
-                num_register_subtiles_per_row, register_subtile_cols,
-                elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(1, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(1, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(2, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(2, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(3, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(3, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(4, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(4, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(5, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(5, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(6, lds_base, srsrc, row_stride);
 
-            buffer_load_lds<T, N_THREADS>(6, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
-
-            buffer_load_lds<T, N_THREADS>(7, warp_id, laneid, lds_base, srsrc, row_stride, num_warps, 
-                                        num_register_subtiles, num_register_tiles_per_row, 
-                                        num_register_subtiles_per_row, register_subtile_cols,
-                                        elem_per_thread);
+            buffer_load_lds<T, ST, N_THREADS>(7, lds_base, srsrc, row_stride);
         }
 
         // end global to shared
-        auto as_subtile_temp = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, k_step>(As[next], {warp_m, 0});
-        load(a_temp, as_subtile_temp);
+        {
+            // auto as_subtile_temp = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, k_step>(As[next], {warp_m, 0});
+            // load(a_temp, as_subtile_temp);
+            using RT = RT_A;
+            RT& dst = a_temp;
+            auto as_subtile_temp = kittens::subtile_inplace<BLOCK_SIZE_ROW / WARPS_ROW, k_step>(As[next], {warp_m, 0});
+            using ST = typeof(as_subtile_temp);
+            const ST& src = as_subtile_temp;
+
+            using U  = ST::dtype;
+            uint32_t addr = reinterpret_cast<uintptr_t>(&src.data[laneid() * (16 / sizeof(U))]);
+
+            ds_read_128_bits<RT, ST, U>(dst, addr, 0, 0, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 0, 0, 1);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 0, 1, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 0, 1, 1);
+
+            ds_read_128_bits<RT, ST, U>(dst, addr, 1, 0, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 1, 0, 1);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 1, 1, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 1, 1, 1);
+
+            ds_read_128_bits<RT, ST, U>(dst, addr, 2, 0, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 2, 0, 1);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 2, 1, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 2, 1, 1);
+
+            ds_read_128_bits<RT, ST, U>(dst, addr, 3, 0, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 3, 0, 1);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 3, 1, 0);
+            ds_read_128_bits<RT, ST, U>(dst, addr, 3, 1, 1);
+        }
+
+
         // this is doing the kth mma
         mma_ABt(c, a, b, c);
         auto bs_subtile_temp = kittens::subtile_inplace<BLOCK_SIZE_COL / WARPS_COL, k_step>(Bs[next], {warp_n, 0});
