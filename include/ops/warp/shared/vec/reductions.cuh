@@ -30,27 +30,31 @@ __device__ static inline void reduce(typename SV::dtype &dst_accum, const SV &sr
     int laneid = kittens::laneid();
     T accum;
     if(laneid < src.length) accum = src[laneid]; // initialize a register accumulator
-    __syncwarp();
+    __syncthreads();
     for(int i = laneid+kittens::WARP_THREADS; i < src.length; i+=kittens::WARP_THREADS) {
         accum = op::template op<T>(accum, src[i]);
     }
-    __syncwarp();
+    __syncthreads();
     // We can now reduce within the warp.
-    if constexpr (src.length > 16) {
-        accum = op::template op<T>(accum, packed_shfl_down_sync(kittens::MASK_ALL, accum, 16));
-        __syncwarp();
+    if (src.length > 32) {
+        accum = op::template op<T>(accum, packed_shfl_down(kittens::MASK_ALL, accum, 32));
+        __syncthreads();
     }
-    accum = op::template op<T>(accum, packed_shfl_down_sync(kittens::MASK_ALL, accum, 8));
-    __syncwarp();
-    accum = op::template op<T>(accum, packed_shfl_down_sync(kittens::MASK_ALL, accum, 4));
-    __syncwarp();
-    accum = op::template op<T>(accum, packed_shfl_down_sync(kittens::MASK_ALL, accum, 2));
-    __syncwarp();
-    accum = op::template op<T>(accum, packed_shfl_down_sync(kittens::MASK_ALL, accum, 1));
-    __syncwarp();
+    if (src.length > 16) {
+        accum = op::template op<T>(accum, packed_shfl_down(kittens::MASK_ALL, accum, 16));
+        __syncthreads();
+    }
+    accum = op::template op<T>(accum, packed_shfl_down(kittens::MASK_ALL, accum, 8));
+    __syncthreads();
+    accum = op::template op<T>(accum, packed_shfl_down(kittens::MASK_ALL, accum, 4));
+    __syncthreads();
+    accum = op::template op<T>(accum, packed_shfl_down(kittens::MASK_ALL, accum, 2));
+    __syncthreads();
+    accum = op::template op<T>(accum, packed_shfl_down(kittens::MASK_ALL, accum, 1));
+    __syncthreads();
     if constexpr (!reset) accum = op::template op<T>(accum, src_accum);
     // broadcast to all threads in the warp.
-    dst_accum = packed_shfl_sync(kittens::MASK_ALL, accum, 0); // everyone takes from warp leader
+    dst_accum = packed_shfl(kittens::MASK_ALL, accum, 0); // everyone takes from warp leader
 }
 
 /* ----------  WRAPPERS FOR PRETTINESS  ---------- */

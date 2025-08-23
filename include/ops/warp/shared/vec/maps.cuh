@@ -21,7 +21,7 @@ namespace kittens {
  */
 template<typename op, ducks::sv::all T>
 __device__ static inline void unary_op(T &dst, const T &src) {
-    __syncwarp();
+    __syncthreads();
     #pragma unroll
     for(int cur = kittens::laneid(); cur < T::length; cur+=WARP_THREADS) {
         dst[cur] = op::template op<typename T::dtype>(src[cur]);
@@ -38,7 +38,7 @@ __device__ static inline void unary_op(T &dst, const T &src) {
  */
 template<typename op, ducks::sv::all T>
 __device__ static inline void bin_op(T &dst, const T &lhs, const T &rhs) {
-    __syncwarp();
+    __syncthreads();
     #pragma unroll
     for(int cur = laneid(); cur < T::length; cur+=WARP_THREADS) {
         dst[cur] = op::template op<typename T::dtype>(lhs[cur], rhs[cur]);
@@ -55,7 +55,7 @@ __device__ static inline void bin_op(T &dst, const T &lhs, const T &rhs) {
  */
 template<typename op, ducks::sv::all T>
 __device__ static inline void bin_op(T &dst, const T &src, const typename T::dtype &param) {
-    __syncwarp();
+    __syncthreads();
     #pragma unroll
     for(int cur = laneid(); cur < T::length; cur+=WARP_THREADS) {
         dst[cur] = op::template op<typename T::dtype>(src[cur], param);
