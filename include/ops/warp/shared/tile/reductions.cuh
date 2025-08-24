@@ -36,7 +36,7 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
             row_accum[row] = op::template op<dtype>(src_accum[row], accum);
         }
     }
-    __syncwarp();
+    __syncthreads();
 }
 
 /**
@@ -65,7 +65,7 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
             col_accum[col] = op::template op<dtype>(src_accum[col], accum);
         }
     }
-    __syncwarp();
+    __syncthreads();
 }
 
 /* ----------  WRAPPERS FOR PRETTINESS  ---------- */
