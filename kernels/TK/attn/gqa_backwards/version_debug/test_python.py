@@ -14,38 +14,6 @@ torch.set_printoptions(
     threshold=float("inf")  
 )
 
-# **************************************************
-# Reference
-# **************************************************
-
-def simple_flash_backward(Q, K, V, dO, m, l):
-    """Simple version that should match PyTorch exactly"""
-    D = Q.shape[-1]
-    scale = 1.0 / math.sqrt(D)
-
-    # Recompute scores and probabilities with saved m, l
-    S = torch.matmul(Q, K.transpose(-2, -1)) * scale
-    P = torch.exp(S - m.unsqueeze(-1)) / l.unsqueeze(-1)
-    O = torch.matmul(P, V)
-
-    # dV
-    dV = torch.matmul(P.transpose(-2, -1), dO)
-
-    # softmax backward
-    Delta = (dO * O).sum(dim=-1, keepdim=True)                 # (B, N, H, 1)
-    dS = P * (torch.matmul(dO, V.transpose(-2, -1)) - Delta)   # (B, N, H, N)
-
-    # chain rule through S = (Q K^T) * scale
-    dQ = torch.matmul(dS, K) * scale
-    dK = torch.matmul(dS.transpose(-2, -1), Q) * scale
-
-    return dQ, dK, dV, Delta
-
-# **************************************************
-# Generate inputs
-# **************************************************
-
-
 causal = False
 b = 1
 h = 1
@@ -92,10 +60,6 @@ P_tiled = exp_scores / l_tiled
 O_tiled = torch.matmul(P_tiled, V_tiled.float())
 m_tiled = m_tiled.squeeze(-1)
 l_tiled = l_tiled.squeeze(-1)
-
-dQ_tiled, dK_tiled, dV_tiled, delta_tiled = simple_flash_backward(Q_tiled.float(), K_tiled.float(), V_tiled.float(), dO_tiled.float(), m_tiled, l_tiled)
-out_tiled_bhnd = O_tiled
-q_grad_tiled_bhnd = dQ_tiled
 
 # **************************************************
 # ThunderKittens
