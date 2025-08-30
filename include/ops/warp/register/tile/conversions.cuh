@@ -513,13 +513,8 @@ __device__ static inline void swap_layout_and_transpose(rt<T2, _cols, _rows, typ
  * @param[out] dst A reference to the destination register base tile.
  * @param[in] src A reference to the source register base tile.
  */
-#ifdef KITTENS_CDNA4
-template<typename T, typename U, ducks::rt_layout::all layout, ducks::rt_layout::all matrix_layout>
+template<typename T, typename U, ducks::rt_layout::all layout, typename matrix_layout>
 __device__ static inline void copy(rt_base<T, layout, matrix_layout> &dst, const rt_base<U, layout, matrix_layout> &src) {
-#else
-template<typename T, typename U, ducks::rt_layout::all layout>
-__device__ static inline void copy(rt_base<T, layout> &dst, const rt_base<U, layout> &src) {
-#endif
     using T2 = typename base_types::packing<T>::packed_type;
     using U2 = typename base_types::packing<U>::packed_type;
     #pragma unroll
@@ -548,7 +543,7 @@ __device__ static inline void copy(rt<T2, _height, _width, layout, matrix_layout
             copy(dst.tiles[i][j], src.tiles[i][j]);
         }
     }
-}
+} 
 
 /* ----------  CAUSAL  ---------- */
 
