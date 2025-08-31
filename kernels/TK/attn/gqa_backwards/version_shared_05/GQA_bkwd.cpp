@@ -198,15 +198,8 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
         qo_tile<D, float, accum_col_l> dQ_i;
         zero(dQ_i);
-        // load(dQ_i, g.dQg, {batch_idx,head_idx,i,0});
-        __builtin_amdgcn_s_waitcnt(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
         attn_tile<D, bf16, row_l> dS_ij_bf16_row;  
         load(dS_ij_bf16_row, g.dS_ij, {batch_idx,head_idx,i,j});
-        __builtin_amdgcn_s_waitcnt(0);
-        __builtin_amdgcn_sched_barrier(0);
-        __builtin_amdgcn_s_barrier();
         kv_tile<D, bf16, col_l> K_j_col;
         load(K_j_col, g.K, {batch_idx, head_idx, j, 0});  // TODO: replace with SMEM load
         __builtin_amdgcn_s_waitcnt(0);
