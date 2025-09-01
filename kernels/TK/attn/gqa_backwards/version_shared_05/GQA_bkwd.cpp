@@ -240,7 +240,6 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
 
     // 6. Load K_j and V_j from HBM to registers
     const int j = seq_idx * NUM_WARPS + warpid;
-    load(V_j, g.V, {batch_idx, head_idx, j, 0});
     // load(K_j, subtile_inplace<WARP_SIZE_KV, D>(K_j_smem, {warpid, 0}));
     // __builtin_amdgcn_s_waitcnt(0);
     // __builtin_amdgcn_s_barrier();
@@ -266,6 +265,7 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         copy(P_ij_bf16, P_ij);
 
         // 13. dP_ij = dO_i @ V_j^T
+        load(V_j, g.V, {batch_idx, head_idx, j, 0});
         load(*(qo_tile<D, bf16, row_l, mfma_16x16x32>*) (&dO_i), g.dOg, {batch_idx, head_idx, i, 0}); // TODO: replace with SMEM load;
         zero(dP_ij);
         mma_ABt(dP_ij, *(qo_tile<D, bf16, row_l, mfma_16x16x32>*) (&dO_i), V_j, dP_ij);
