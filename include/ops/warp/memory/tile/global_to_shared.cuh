@@ -121,18 +121,16 @@ __device__ inline void prefill_swizzled_offsets(
 
         const int register_tile_id = warpid + i * num_warps;
 
-        if constexpr (std::is_same_v<typename ST::matrix_layout, ducks::st_matrix::mfma_16x16x32>) {
+        if constexpr (std::is_same_v<typename ST::matrix_layout, ducks::st_matrix::mfma_16x16x32>) {   
             const int warp_col_offset = (register_tile_id % num_register_tiles_per_row) * ST::underlying_tile_cols;
             const int warp_row_offset = ((register_tile_id / num_register_tiles_per_row) * ST::underlying_tile_rows);
 
             const int lane_col_byte_offset = (laneid % 4) * bytes_per_thread;
             const int lane_row_offset = ((laneid % kittens::WARP_THREADS) / 4);
-            const int swizzle = ((lane_row_offset * ST::underlying_tile_cols * sizeof(T)) >> 8) << 4;
+            const int swizzle = ((lane_row_offset * ST::underlying_tile_cols * sizeof(T)) >> 9) << 5;
 
             const int swizzled_lane_col_byte_offset = lane_col_byte_offset ^ swizzle;
-
-            const int offset_in_global = ((warp_row_offset + lane_row_offset) * row_stride + warp_col_offset) * sizeof(T) + swizzled_lane_col_byte_offset;
-            swizzled_offsets[i] = offset_in_global;
+            swizzled_offsets[i] = ((warp_row_offset + lane_row_offset) * row_stride + warp_col_offset) * sizeof(T) + swizzled_lane_col_byte_offset;
         } else {
             static_assert(false, "Unsupported matrix shape");
         }
