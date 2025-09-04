@@ -650,24 +650,22 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
     constexpr int total_blocks_needed = blocks_row * blocks_col;
     constexpr int k_iters = K / BLOCK_K; // K iterations
 
-    using ST_A = st<fp8e4m3, BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_K>;
-    using ST_B = st<fp8e4m3, BLOCK_SIZE_COL / WARPS_COL, BLOCK_K>;
+    using ST_A = st<fp8e4m3, BLOCK_SIZE_ROW / 2, BLOCK_K>;
+    using ST_B = st<fp8e4m3, BLOCK_SIZE_COL / 2, BLOCK_K>;
 
     using GL_A = kittens::gl<fp8e4m3, 1, 1, M, K>;
     using GL_B = kittens::gl<fp8e4m3, 1, 1, N, K>;
     using GL_C = kittens::gl<bf16, 1, 1, M, N>;
 
-    using RT_A = rt_fp8e4m3<BLOCK_SIZE_ROW / WARPS_ROW, k_step>; // 128x128 = 4x2
+    using RT_A = rt_fp8e4m3<BLOCK_SIZE_ROW / 2 / WARPS_ROW, k_step>; // 128x128 = 4x2
     using RT_B = rt_fp8e4m3<BLOCK_SIZE_COL / WARPS_COL, k_step>; // 128x128 = 4x2
     using RT_C = rt_fl<BLOCK_SIZE_ROW / WARPS_ROW, BLOCK_SIZE_COL / WARPS_COL, kittens::ducks::rt_layout::accumulator>; // 128x128 = 4x4
 
     __shared__ ST_A As[2];
     __shared__ ST_B Bs[2];
 
-    RT_A a;
+    RT_A a[2];
     RT_B b;
-    RT_A a_temp;
-    RT_B b_temp;
     RT_C c;
 
     int global_block_id = blockIdx.x;
@@ -718,14 +716,214 @@ __global__ __launch_bounds__(256, 1) void matmul_device(const kittens::gl<fp8e4m
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
-        load_st_to_rt(a, As[warp_m]);
+        auto a_subtile_0 = kittens::subtile_inplace<BLOCK_SIZE_ROW / 2 / WARPS_ROW, k_step>(As[warp_m], {0, 0}, true);
+        load_st_to_rt(a[0], a_subtile_0);
+        auto a_subtile_1 = kittens::subtile_inplace<BLOCK_SIZE_ROW / 2 / WARPS_ROW, k_step>(As[warp_m], {1, 0}, true);
+        load_st_to_rt(a[1], a_subtile_1);
         load_st_to_rt(b, Bs[warp_n]);
 
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_sched_barrier(0);
 
-        mma_ABt(c, a, b, c);
+        // mma_ABt(c, a, b, c);
+        {
+            mma_ABt_base(
+                c.tiles[0][0],
+                a[0].tiles[0][0],
+                b.tiles[0][0],
+                c.tiles[0][0]
+            );
+            mma_ABt_base(
+                c.tiles[0][0],
+                a[0].tiles[0][1],
+                b.tiles[0][1],
+                c.tiles[0][0]
+            );
+            mma_ABt_base(
+                c.tiles[0][1],
+                a[0].tiles[0][0],
+                b.tiles[1][0],
+                c.tiles[0][1]
+            );
+            mma_ABt_base(
+                c.tiles[0][1],
+                a[0].tiles[0][1],
+                b.tiles[1][1],
+                c.tiles[0][1]
+            );
+            mma_ABt_base(
+                c.tiles[0][2],
+                a[0].tiles[0][0],
+                b.tiles[2][0],
+                c.tiles[0][2]
+            );
+            mma_ABt_base(
+                c.tiles[0][2],
+                a[0].tiles[0][1],
+                b.tiles[2][1],
+                c.tiles[0][2]
+            );
+            mma_ABt_base(
+                c.tiles[0][3],
+                a[0].tiles[0][0],
+                b.tiles[3][0],
+                c.tiles[0][3]
+            );
+            mma_ABt_base(
+                c.tiles[0][3],
+                a[0].tiles[0][1],
+                b.tiles[3][1],
+                c.tiles[0][3]
+            );
+
+            mma_ABt_base(
+                c.tiles[1][0],
+                a[0].tiles[1][0],
+                b.tiles[0][0],
+                c.tiles[1][0]
+            );
+            mma_ABt_base(
+                c.tiles[1][0],
+                a[0].tiles[1][1],
+                b.tiles[0][1],
+                c.tiles[1][0]
+            );
+            mma_ABt_base(
+                c.tiles[1][1],
+                a[0].tiles[1][0],
+                b.tiles[1][0],
+                c.tiles[1][1]
+            );
+            mma_ABt_base(
+                c.tiles[1][1],
+                a[0].tiles[1][1],
+                b.tiles[1][1],
+                c.tiles[1][1]
+            );
+            mma_ABt_base(
+                c.tiles[1][2],
+                a[0].tiles[1][0],
+                b.tiles[2][0],
+                c.tiles[1][2]
+            );
+            mma_ABt_base(
+                c.tiles[1][2],
+                a[0].tiles[1][1],
+                b.tiles[2][1],
+                c.tiles[1][2]
+            );
+            mma_ABt_base(
+                c.tiles[1][3],
+                a[0].tiles[1][0],
+                b.tiles[3][0],
+                c.tiles[1][3]
+            );
+            mma_ABt_base(
+                c.tiles[1][3],
+                a[0].tiles[1][1],
+                b.tiles[3][1],
+                c.tiles[1][3]
+            );
+
+            mma_ABt_base(
+                c.tiles[2][0],
+                a[1].tiles[0][0],
+                b.tiles[0][0],
+                c.tiles[2][0]
+            );
+            mma_ABt_base(
+                c.tiles[2][0],
+                a[1].tiles[0][1],
+                b.tiles[0][1],
+                c.tiles[2][0]
+            );
+            mma_ABt_base(
+                c.tiles[2][1],
+                a[1].tiles[0][0],
+                b.tiles[1][0],
+                c.tiles[2][1]
+            );
+            mma_ABt_base(
+                c.tiles[2][1],
+                a[1].tiles[0][1],
+                b.tiles[1][1],
+                c.tiles[2][1]
+            );
+            mma_ABt_base(
+                c.tiles[2][2],
+                a[1].tiles[0][0],
+                b.tiles[2][0],
+                c.tiles[2][2]
+            );
+            mma_ABt_base(
+                c.tiles[2][2],
+                a[1].tiles[0][1],
+                b.tiles[2][1],
+                c.tiles[2][2]
+            );
+            mma_ABt_base(
+                c.tiles[2][3],
+                a[1].tiles[0][0],
+                b.tiles[3][0],
+                c.tiles[2][3]
+            );
+            mma_ABt_base(
+                c.tiles[2][3],
+                a[1].tiles[0][1],
+                b.tiles[3][1],
+                c.tiles[2][3]
+            );
+
+            mma_ABt_base(
+                c.tiles[3][0],
+                a[1].tiles[1][0],
+                b.tiles[0][0],
+                c.tiles[3][0]
+            );
+            mma_ABt_base(
+                c.tiles[3][0],
+                a[1].tiles[1][1],
+                b.tiles[0][1],
+                c.tiles[3][0]
+            );
+            mma_ABt_base(
+                c.tiles[3][1],
+                a[1].tiles[1][0],
+                b.tiles[1][0],
+                c.tiles[3][1]
+            );
+            mma_ABt_base(
+                c.tiles[3][1],
+                a[1].tiles[1][1],
+                b.tiles[1][1],
+                c.tiles[3][1]
+            );
+            mma_ABt_base(
+                c.tiles[3][2],
+                a[1].tiles[1][0],
+                b.tiles[2][0],
+                c.tiles[3][2]
+            );
+            mma_ABt_base(
+                c.tiles[3][2],
+                a[1].tiles[1][1],
+                b.tiles[2][1],
+                c.tiles[3][2]
+            );
+            mma_ABt_base(
+                c.tiles[3][3],
+                a[1].tiles[1][0],
+                b.tiles[3][0],
+                c.tiles[3][3]
+            );
+            mma_ABt_base(
+                c.tiles[3][3],
+                a[1].tiles[1][1],
+                b.tiles[3][1],
+                c.tiles[3][3]
+            );
+        }
         __builtin_amdgcn_sched_barrier(0);
     }
 
