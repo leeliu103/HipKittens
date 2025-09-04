@@ -7,6 +7,7 @@
 
 #ifdef KITTENS_CDNA4
 #include "st_matrix.cuh"
+#include "st_layout.cuh"
 #endif
 
 #include "sv.cuh"

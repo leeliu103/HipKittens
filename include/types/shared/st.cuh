@@ -11,6 +11,7 @@
 
 #ifdef KITTENS_CDNA4
 #include "st_matrix.cuh"
+#include "st_layout.cuh"
 /* ----------  MAIN TILE STRUCT  ---------- */
 
 // these are helper structs for type inference
@@ -48,17 +49,20 @@ struct st_subtile;
  * @tparam _rows The height of the tile.
  * @tparam _cols The width of the tile.
  */
-template<typename _T, int _rows, int _cols, ducks::st_matrix::all _matrix=ducks::st_matrix::mfma_32x32x16>
+template<typename _T, int _rows, int _cols, ducks::st_layout::all _layout=ducks::st_layout::classical, ducks::st_matrix::all _matrix=ducks::st_matrix::mfma_32x32x16>
 struct KITTENS_DEFAULT_ALIGN st {
     using identifier = ducks::st::identifier; ///< Type identifier for shared memory tile.
     using matrix_layout = _matrix; ///< Layout of the matrix tile.
+    using layout = _layout; ///< Layout of the tile.
     using T = base_types::packing<_T>::unpacked_type;
     using T2 = base_types::packing<_T>::packed_type;
     using dtype = T; ///< Data type of the elements in the tile.
 
     // define underlying data as same as that projected, to make clear that this is *not* a subtile.
-    static constexpr int underlying_tile_rows = matrix_layout::tile_size_row_in;
-    static constexpr int underlying_tile_cols = matrix_layout::tile_size_col_in;
+    static constexpr int underlying_tile_rows = std::is_same_v<layout, ducks::st_layout::accumulator> ? 
+                                                matrix_layout::tile_size_row_out : matrix_layout::tile_size_row_in;
+    static constexpr int underlying_tile_cols = std::is_same_v<layout, ducks::st_layout::accumulator> ? 
+                                                matrix_layout::tile_size_col_out : matrix_layout::tile_size_col_in;
 
     static constexpr int underlying_rows          = _rows;
     static constexpr int underlying_cols          = _cols;
@@ -82,7 +86,7 @@ struct KITTENS_DEFAULT_ALIGN st {
     using col_vec = sv<dtype, rows>; ///< Column vector type for this tile
     using row_vec = sv<dtype, cols>; ///< Row vector type for this tile
     template<int subtile_rows, int subtile_cols> using subtile = st_subtile<
-        st<T, rows, cols, _matrix>, subtile_rows, subtile_cols
+        st<T, rows, cols, _layout, _matrix>, subtile_rows, subtile_cols
     >; ///< A templated subtile type wrapper for this tile.
 };
 
@@ -108,6 +112,7 @@ struct st_subtile {
     using T = ST::T;
     using T2 = ST::T2;
     using dtype = T; ///< Data type of the elements in the tile.
+    using layout = ST::layout; ///< Layout of the tile.
     using matrix_layout = ST::matrix_layout; ///< Layout of the matrix tile.
 
     static constexpr int underlying_tile_rows     = ST::underlying_tile_rows;
@@ -167,9 +172,9 @@ template<typename T> concept all = requires {
 
 /* ----------  WRAPPERS FOR PRETTINESS  ---------- */
 
-template<int _height, int _width, ducks::st_matrix::all matrix=ducks::st_matrix::mfma_32x32x16> using st_bf = st<bf16,  _height, _width, matrix>;
-template<int _height, int _width, ducks::st_matrix::all matrix=ducks::st_matrix::mfma_32x32x16> using st_hf = st<half,  _height, _width, matrix>;
-template<int _height, int _width, ducks::st_matrix::all matrix=ducks::st_matrix::mfma_32x32x16> using st_fl = st<float, _height, _width, matrix>;
+template<int _height, int _width, ducks::st_layout::all layout=ducks::st_layout::classical, ducks::st_matrix::all matrix=ducks::st_matrix::mfma_32x32x16> using st_bf = st<bf16,  _height, _width, layout, matrix>;
+template<int _height, int _width, ducks::st_layout::all layout=ducks::st_layout::classical, ducks::st_matrix::all matrix=ducks::st_matrix::mfma_32x32x16> using st_hf = st<half,  _height, _width, layout, matrix>;
+template<int _height, int _width, ducks::st_layout::all layout=ducks::st_layout::classical, ducks::st_matrix::all matrix=ducks::st_matrix::mfma_32x32x16> using st_fl = st<float, _height, _width, layout, matrix>;
 }
 #else
 /* ----------  MAIN TILE STRUCT  ---------- */
