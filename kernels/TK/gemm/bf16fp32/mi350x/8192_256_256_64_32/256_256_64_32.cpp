@@ -56,17 +56,16 @@ void micro_tk(const micro_globals g) {
     wgid = (wgid % NUM_XCDS) * (NUM_WGS / NUM_XCDS) + (wgid / NUM_XCDS);
     // Swizzle for better L2 within the same XCD.
     const int WGM = 8;
-    const int num_pid_m = ceil_div(M, BLOCK_SIZE);
-    const int num_pid_n = ceil_div(N, BLOCK_SIZE);
-    int num_wgid_in_group = WGM * num_pid_n;
+    const int num_pid = ceil_div(M, BLOCK_SIZE);
+    int num_wgid_in_group = WGM * num_pid;
     int group_id = wgid / num_wgid_in_group;
     int first_pid_m = group_id * WGM;
-    int group_size_m = min(num_pid_m - first_pid_m, WGM);
+    int group_size_m = min(num_pid - first_pid_m, WGM);
     int pid_m = first_pid_m + ((wgid % num_wgid_in_group) % group_size_m);
     int pid_n = (wgid % num_wgid_in_group) / group_size_m;
     // Assign the tile's row/column based on the pid_m and pid_n.
-    const int row = pid_m; // blockIdx.x
-    const int col = pid_n; // blockIdx.y
+    const int row = pid_m; 
+    const int col = pid_n; 
 
     // Info
     const int warp_id = kittens::warpid();
@@ -84,6 +83,7 @@ void micro_tk(const micro_globals g) {
     uint32_t swizzled_offsets_B[memcpy_per_tile];
     G::prefill_swizzled_offsets(As[tic], g.a, swizzled_offsets_A);
     G::prefill_swizzled_offsets(Bs[tic], g.b, swizzled_offsets_B);
+    const lds_lane_ofs lane_ofs = prefill_swizzled_offsets(A_tile, As[tic]);
 
     // Load first tile into shared memory
     G::load(As[tic], g.a, {0, 0, row, 0}, swizzled_offsets_A);  
@@ -99,12 +99,11 @@ void micro_tk(const micro_globals g) {
     for (int tile = 0; tile < num_tiles - 1; ++tile, tic^=1, toc^=1) {
 
         // Cluster 0
+        load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 0}), lane_ofs);
         G::load(As[toc], g.a, {0, 0, row, tile+1}, swizzled_offsets_A);
-        load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 0}));
-        load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 0}));
+        load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 0}), lane_ofs);
         G::load(Bs[toc], g.b, {0, 0, col, tile+1}, swizzled_offsets_B);
         __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
 
         // Cluster 1
         asm volatile("s_waitcnt lgkmcnt(0)");
@@ -112,31 +111,27 @@ void micro_tk(const micro_globals g) {
         mma_ABt(C_accum, A_tile, B_tile, C_accum);
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
 
         // Cluster 2
-        load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 1}));
-        load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 1}));
+        load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 1}), lane_ofs);
+        load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 1}), lane_ofs);
         __builtin_amdgcn_s_waitcnt(0);
         __builtin_amdgcn_s_barrier();
-        __builtin_amdgcn_sched_barrier(0);
 
         // Cluster 3
         asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_s_setprio(1);
         mma_ABt(C_accum, A_tile, B_tile, C_accum);
         __builtin_amdgcn_s_setprio(0);
-       __builtin_amdgcn_s_barrier(); 
-       __builtin_amdgcn_sched_barrier(0);     
+        __builtin_amdgcn_s_barrier(); 
     }
 
     // Epilogue
     // Cluster 0
     __builtin_amdgcn_sched_barrier(0);
-    load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 0}));
-    load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 0}));
+    load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 0}), lane_ofs);
+    load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 0}), lane_ofs);
     __builtin_amdgcn_s_barrier();    
-    __builtin_amdgcn_sched_barrier(0);
 
     // Cluster 1
     asm volatile("s_waitcnt lgkmcnt(0)");
@@ -144,13 +139,11 @@ void micro_tk(const micro_globals g) {
     mma_ABt(C_accum, A_tile, B_tile, C_accum);
     __builtin_amdgcn_s_setprio(0);
     __builtin_amdgcn_s_barrier();
-    __builtin_amdgcn_sched_barrier(0);
 
     // Cluster 2
-    load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 1}));
-    load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 1}));
+    load(A_tile, subtile_inplace<REG_BLOCK_M, DOT_SLICE>(As[tic], {warp_row, 1}), lane_ofs);
+    load(B_tile, subtile_inplace<REG_BLOCK_N, DOT_SLICE>(Bs[tic], {warp_col, 1}), lane_ofs);
     __builtin_amdgcn_s_barrier();
-    __builtin_amdgcn_sched_barrier(0);
 
     // Cluster 3
     asm volatile("s_waitcnt lgkmcnt(0)");
@@ -158,11 +151,6 @@ void micro_tk(const micro_globals g) {
     mma_ABt(C_accum, A_tile, B_tile, C_accum);
     __builtin_amdgcn_s_setprio(0);
     __builtin_amdgcn_s_barrier();
-    __builtin_amdgcn_sched_barrier(0);
-
-    if (warp_row == 0) {
-        __builtin_amdgcn_s_barrier();
-    }
 
     store(g.c, C_accum, {0, 0, row * 2 + warp_row, col * 4 + warp_col});
 }

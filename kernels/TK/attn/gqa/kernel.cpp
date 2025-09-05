@@ -72,6 +72,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     uint32_t swizzled_offsets_K[memcpy_per_tile];
     G::prefill_swizzled_offsets<1, false>(k_smem[0], g.Kg, swizzled_offsets_K);
     G::prefill_swizzled_offsets<1, false>(v_smem[0], g.Vg, swizzled_offsets_V);
+    const lds_lane_ofs lane_ofs = prefill_swizzled_offsets(k_reg, k_smem[0]);
 
     G::load<1, false>(k_smem[0], g.Kg, {batch_idx, 0, head_idx_kv, 0}, swizzled_offsets_K);
 
@@ -90,7 +91,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     G::load<1, false>(k_smem[1], g.Kg, {batch_idx, 1, head_idx_kv, 0}, swizzled_offsets_K);
     // All warps then load in the first slice of K (K0)
     G::load<1, false>(v_smem[0], g.Vg, {batch_idx, 0, head_idx_kv, 0}, swizzled_offsets_V);
-    load(k_reg, k_smem[0]);
+    load(k_reg, k_smem[0], lane_ofs);
     swap_layout_and_transpose(k_reg_transposed, k_reg);
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_sched_barrier(0);
@@ -113,7 +114,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     }
 
     // All warps then load in the second slice of K (K1)
-    load(k_reg, k_smem[1]);
+    load(k_reg, k_smem[1], lane_ofs);
     // All warps then collaboratively load in the third slice of K (K2) into shared memory
     G::load<1, false>(k_smem[0], g.Kg, {batch_idx, 2, head_idx_kv, 0}, swizzled_offsets_K);
     swap_layout_and_transpose(k_reg_transposed, k_reg);
@@ -122,10 +123,8 @@ __global__ void attend_ker(const attn_globals<D> g) {
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
 
-    
-
     // hot loop
-    #pragma unroll (1)
+    // #pragma unroll  // for some reason unroll makes it slower
     for (int j = 3; j < num_tiles - 1; j += 2) {
         // Cluster 0:
         //      QK1
@@ -144,7 +143,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // Cluster 1:
         //      Load K3 into shared 
-        G::load<1, false>(k_smem[1], g.Kg, {batch_idx, j, head_idx_kv, 0});
+        G::load<1, false>(k_smem[1], g.Kg, {batch_idx, j, head_idx_kv, 0}, swizzled_offsets_K);
         //      Load V0 into registers
         load(v_reg, v_smem[0]);
         __builtin_amdgcn_sched_barrier(0);
@@ -169,9 +168,9 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // Cluster 3:
         //      Load V2 into shared
-        G::load<1, false>(v_smem[0], g.Vg, {batch_idx, j - 1, head_idx_kv, 0});
+        G::load<1, false>(v_smem[0], g.Vg, {batch_idx, j - 1, head_idx_kv, 0}, swizzled_offsets_V);
         //      Load K2 into registers
-        load(k_reg, k_smem[0]);
+        load(k_reg, k_smem[0], lane_ofs);
         swap_layout_and_transpose(k_reg_transposed, k_reg);
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
@@ -179,7 +178,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // Cluster 4:
         //      QK2
-        // asm volatile("s_waitcnt lgkmcnt(0)");
+        asm volatile("s_waitcnt lgkmcnt(0)");
         zero(att_block[0]);
         mma_AtB(att_block[0], k_reg_transposed, q_reg_transposed, att_block[0]);
         //      Finish softmax for QK1
@@ -194,7 +193,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // Cluster 5:
         //      Load K4 into shared
-        G::load<1, false>(k_smem[0], g.Kg, {batch_idx, j + 1, head_idx_kv, 0});
+        G::load<1, false>(k_smem[0], g.Kg, {batch_idx, j + 1, head_idx_kv, 0}, swizzled_offsets_K);
         //      Load V1 into registers
         load(v_reg, v_smem[1]);
         __builtin_amdgcn_sched_barrier(0);
@@ -219,9 +218,9 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // Cluster 7:
         //      Load V3 into shared
-        G::load<1, false>(v_smem[1], g.Vg, {batch_idx, j, head_idx_kv, 0});
+        G::load<1, false>(v_smem[1], g.Vg, {batch_idx, j, head_idx_kv, 0}, swizzled_offsets_V);
         //      Load K3 into registers
-        load(k_reg, k_smem[1]);
+        load(k_reg, k_smem[1], lane_ofs);
         swap_layout_and_transpose(k_reg_transposed, k_reg);
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
@@ -248,7 +247,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
     // Cluster 1:
     //      Load K5 into shared
-    G::load<1, false>(k_smem[1], g.Kg, {batch_idx, num_tiles - 1, head_idx_kv, 0});
+    G::load<1, false>(k_smem[1], g.Kg, {batch_idx, num_tiles - 1, head_idx_kv, 0}, swizzled_offsets_K);
     //      Load V2 into registers
     load(v_reg, v_smem[0]);
     __builtin_amdgcn_sched_barrier(0);
@@ -273,9 +272,9 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
     // Cluster 3:
     //      Load V4 into shared
-    G::load<1, false>(v_smem[0], g.Vg, {batch_idx, num_tiles - 2, head_idx_kv, 0});
+    G::load<1, false>(v_smem[0], g.Vg, {batch_idx, num_tiles - 2, head_idx_kv, 0}, swizzled_offsets_V);
     //      Load K4 into registers
-    load(k_reg, k_smem[0]);
+    load(k_reg, k_smem[0], lane_ofs);
     swap_layout_and_transpose(k_reg_transposed, k_reg);
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
@@ -320,7 +319,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
     // Cluster 7:
     //      Load V5 into shared
-    G::load<1, false>(v_smem[1], g.Vg, {batch_idx, num_tiles - 1, head_idx_kv, 0});
+    G::load<1, false>(v_smem[1], g.Vg, {batch_idx, num_tiles - 1, head_idx_kv, 0}, swizzled_offsets_V);
     //      Load K5 into registers
     load(k_reg, k_smem[1]);
     __builtin_amdgcn_sched_barrier(0);
@@ -381,6 +380,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     asm volatile("s_waitcnt lgkmcnt(0)");
     mma_AtB(o_reg, v_reg, att_block_bf16, o_reg);
     mul_col(o_reg, o_reg, max_vec_prev);
+    div_col(o_reg, o_reg, norm_vec);
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);
@@ -390,7 +390,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
         __builtin_amdgcn_s_barrier();
     }
 
-    div_col(o_reg, o_reg, norm_vec);
     qo_tile<D, float, accum_row_l> o_reg_transposed;
     swap_layout_and_transpose(o_reg_transposed, o_reg);
     store<1>(g.Og, o_reg_transposed, {batch_idx, tile_idx, head_idx, 0});

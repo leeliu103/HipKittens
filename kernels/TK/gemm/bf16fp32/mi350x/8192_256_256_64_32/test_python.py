@@ -2,6 +2,7 @@ import torch
 import tk_kernel
 import random
 import time
+from aiter.tuned_gemm import tgemm
 
 profiling = True
 profiling_ref = False
@@ -16,52 +17,8 @@ Bt = B.t().contiguous()  # Transpose B for the kernel
 
 
 if profiling:
-    ############### LOGGING STUFF ###############
-
-    import os
-    import time
-    import shutil
-    import re
-
-    def parse_makefile_targets(makefile_path):
-        src = None
-        with open(makefile_path, "r") as f:
-            for line in f:
-                if match := re.match(r"^SRC\s*=\s*(\S+)", line):
-                    src = match.group(1)
-        return src
-
-    base_dir = os.path.dirname(os.path.realpath(__file__))
-
-    # Set destination directory
-    dirpath = "/workdir/data_logs/"
-    timestamp = time.strftime("%m%d_%H%M%S")
-    new_dir = os.path.join(dirpath, f"{timestamp}_outputs")
-    os.makedirs(new_dir, exist_ok=True)
-
-    # Files to copy (relative to base_dir)
-    src_name = parse_makefile_targets(os.path.join(base_dir, "Makefile"))
-    print(f"src: {src_name}")
-    files_to_copy = [
-        "Makefile",
-        src_name, 
-        "tk_kernel.cpython-313-x86_64-linux-gnu.so",
-        "tk_kernel.cpython-312-x86_64-linux-gnu.so"
-    ]
-
-    for filename in files_to_copy:
-        src = os.path.join(base_dir, filename)
-        dst = os.path.join(new_dir, filename)
-        if os.path.exists(src):
-            shutil.copy2(src, dst)
-        else:
-            print(f"Warning: {filename} not found at {src}, skipping.")
-
-    ################ END LOGGING STUFF ###############
-
-if profiling:
     num_warmup = 1000
-    num_iters = 100
+    num_iters = 300
 else:
     num_warmup = 1
     num_iters = 0
@@ -70,48 +27,63 @@ start_event = torch.cuda.Event(enable_timing=True) # in milliseconds
 end_event = torch.cuda.Event(enable_timing=True)
 flops_ref = (2 * N**3)  # FLOPs for reference
 
-if profiling or profiling_ref:
-    # Reference matmul using PyTorch
-    for _ in range(num_warmup):
-        C_ref = torch.matmul(A, Bt)
-    timings_ref = []
-    for _ in range(num_iters):
-        torch.cuda.synchronize()
-        start_event.record()
-        C_ref = torch.matmul(A, Bt)
-        end_event.record()
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event)
-        timings_ref.append(elapsed_time)
-    if profiling:
-        print(f"{C_ref.dtype=}")
-        avg_time_ref = sum(timings_ref) / len(timings_ref)
-        tflops_ref = flops_ref / (avg_time_ref * 1e9) 
-        print(f"PyTorch reference average execution time: {avg_time_ref:.4f} ms")
-        print(f"PyTorch reference performance: {tflops_ref:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
+for _ in range(num_warmup):
+    C_ref = torch.matmul(A, Bt)
+timings_ref = []
+for _ in range(num_iters):
+    torch.cuda.synchronize()
+    start_event.record()
+    C_ref = torch.matmul(A, Bt)
+    end_event.record()
+    torch.cuda.synchronize()
+    elapsed_time = start_event.elapsed_time(end_event)
+    timings_ref.append(elapsed_time)
+if profiling:
+    print(f"{C_ref.dtype=}")
+    avg_time_ref = sum(timings_ref) / len(timings_ref)
+    tflops_ref = flops_ref / (avg_time_ref * 1e9) 
+    print(f"PyTorch reference average execution time: {avg_time_ref:.4f} ms")
+    print(f"PyTorch reference performance: {tflops_ref:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
+
+
+for _ in range(num_warmup):
+    C_aiter = tgemm.mm(A, B, None, None, None)
+timings_aiter = []
+for _ in range(num_iters):
+    torch.cuda.synchronize()
+    start_event.record()
+    C_aiter = tgemm.mm(A, B, None, None, None)
+    end_event.record()
+    torch.cuda.synchronize()
+    elapsed_time = start_event.elapsed_time(end_event)
+    timings_aiter.append(elapsed_time)
+if profiling:
+    print(f"{C_aiter.dtype=}")
+    avg_time_aiter = sum(timings_aiter) / len(timings_aiter)
+    tflops_aiter = flops_ref / (avg_time_aiter * 1e9) 
+    print(f"AITER (AMD) reference average execution time: {avg_time_aiter:.4f} ms")
+    print(f"AITER (AMD) reference performance: {tflops_aiter:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
 
 
 # Kernel matmul
-if not profiling_ref:
-    C = torch.zeros(N, N, dtype=torch.bfloat16, device='cuda')
-    for _ in range(num_warmup):
-        tk_kernel.dispatch_micro(A, B, C)
-    timings = []
-    for _ in range(num_iters):
-        torch.cuda.synchronize()
-        start_event.record()
-        tk_kernel.dispatch_micro(A, B, C)
-        end_event.record()
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event)
-        timings.append(elapsed_time)
-    if profiling:
-        print(f"{C.dtype=}")
-        avg_time = sum(timings) / len(timings)
-        tflops = flops_ref / (avg_time * 1e9) 
-        print(f"Average execution time: {avg_time:.4f} ms")
-        print(f"Performance: {tflops:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
-
+C = torch.zeros(N, N, dtype=torch.bfloat16, device='cuda')
+for _ in range(num_warmup):
+    tk_kernel.dispatch_micro(A, B, C)
+timings = []
+for _ in range(num_iters):
+    torch.cuda.synchronize()
+    start_event.record()
+    tk_kernel.dispatch_micro(A, B, C)
+    end_event.record()
+    torch.cuda.synchronize()
+    elapsed_time = start_event.elapsed_time(end_event)
+    timings.append(elapsed_time)
+if profiling:
+    print(f"{C.dtype=}")
+    avg_time = sum(timings) / len(timings)
+    tflops = flops_ref / (avg_time * 1e9) 
+    print(f"Average execution time: {avg_time:.4f} ms")
+    print(f"Performance: {tflops:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
 
 # Compare against reference
 if profiling:
@@ -144,24 +116,3 @@ if profiling:
 
 
 
-
-    ############### LOGGING OUTPUTS ####################
-
-    data_to_log = {
-        "N": N,
-        "avg_time_ref": avg_time_ref,
-        "tflops_ref": tflops_ref,
-        "avg_time": avg_time,
-        "tflops": tflops,
-        "max_error": max_error,
-        "mean_error": mean_error,
-        "error_count": error_count,
-    }
-
-    import json
-    with open(os.path.join(new_dir, "data_to_log.json"), "w") as f:
-        json.dump(data_to_log, f, indent=4)
-
-    ################ END LOGGING OUTPUTS ###############
-
-    
