@@ -8,7 +8,7 @@ docker pull rocm/7.0-preview:rocm7.0_preview_pytorch_training_mi35X_prealpha
 
 Launch docker:
 ```
-docker run -it \
+sudo docker run -it \
     --ipc=host \
     --network=host \
     --privileged \
