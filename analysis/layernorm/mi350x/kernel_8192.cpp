@@ -6,7 +6,7 @@
 
 constexpr int B = 16;
 constexpr int H = 16;
-constexpr int N = 4096;
+constexpr int N = 8192;
 constexpr int HEAD_D = 128;
 constexpr int D = HEAD_D * H;
 constexpr float DROPOUT_P = 0.01;
