@@ -66,6 +66,66 @@ def expand_kv_for_gqa(K, V, h_q, h_kv):
     V_expanded = V.repeat_interleave(group_size, dim=1)
     return K_expanded, V_expanded
 
+def reference_forward_tiled(Q, K, V, causal):
+    """Tiled reference implementation with proper online softmax using BHND layout"""
+    q_ = Q.detach().to(torch.bfloat16).requires_grad_(True)
+    k_ = K.detach().to(torch.bfloat16).requires_grad_(True)
+    v_ = V.detach().to(torch.bfloat16).requires_grad_(True)
+
+    q_batch, q_head, q_seq, q_dim = q_.shape
+    k_batch, k_head, k_seq, k_dim = k_.shape
+    v_batch, v_head, v_seq, v_dim = v_.shape
+
+    assert q_batch == k_batch == v_batch
+    assert q_head == k_head == v_head
+    assert q_seq == k_seq == v_seq
+    assert q_dim == k_dim == v_dim
+
+    output = torch.zeros_like(q_)
+    Q_BLOCK_SIZE = 32
+    KV_BLOCK_SIZE = 64
+    scale = 1.0 / math.sqrt(q_dim) * 1.44269504089
+
+    for b in range(0, q_batch):
+        for h in range(0, q_head):
+            for s_block in range(0, q_seq, Q_BLOCK_SIZE):
+                q_block = q_[b, h, s_block:s_block+Q_BLOCK_SIZE, :]
+
+                # Online softmax state
+                max_vec = torch.full((q_block.shape[0], 1), float('-inf'), device=q_block.device, dtype=torch.float32)
+                max_vec_prev = torch.full((q_block.shape[0], 1), float('-inf'), device=q_block.device, dtype=torch.float32)
+                norm_vec = torch.zeros((q_block.shape[0], 1), device=q_block.device, dtype=torch.float32)
+                o_reg = torch.zeros_like(q_block, dtype=torch.float32)
+
+                for k_start in range(0, k_seq, KV_BLOCK_SIZE):
+                    k_block = k_[b, h, k_start:k_start+KV_BLOCK_SIZE, :]
+                    v_block = v_[b, h, k_start:k_start+KV_BLOCK_SIZE, :]
+
+                    # Compute QK^T scaled
+                    QK = torch.matmul(q_block.float(), k_block.float().transpose(-2, -1)) * scale
+
+                    # Softmax
+                    max_vec_prev = max_vec
+                    max_vec = torch.max(QK, dim=-1, keepdim=True)[0]
+                    QK = QK - max_vec
+                    QK = torch.exp2(QK)
+
+                    max_vec_prev = max_vec_prev - max_vec
+                    max_vec_prev = torch.exp2(max_vec_prev)
+                    norm_vec = norm_vec * max_vec_prev
+                    norm_vec = norm_vec + torch.sum(QK, dim=-1, keepdim=True)
+
+                    # AV
+                    o_reg = o_reg * max_vec_prev
+                    o_reg = o_reg + torch.matmul(QK, v_block.float())
+
+                # Final normalization
+                output[b, h, s_block:s_block+Q_BLOCK_SIZE, :] = (o_reg / norm_vec).to(q_.dtype)
+
+    return output, q_, k_, v_
+    
+    
+
 def reference_forward(Q, K, V, causal):
     """GQA Reference implementation using BHND layout (batch, heads, seq, dim)"""
     # Convert to float64 and create new leaf tensors with requires_grad
@@ -136,7 +196,7 @@ group_size = h_q // h_kv  # queries per KV head group
 n = 1024
 d = 128
 dtype = torch.bfloat16
-mean = 10
+mean = 20
 std = 0.1  
 
 flops_ref = flops(b, n, h_q, d, causal, mode="bwd")  # Use query heads for FLOP calculation
@@ -190,6 +250,12 @@ Q_bhnd, K_bhnd, V_bhnd, dO_bhnd = read_inputs()
 # assert K_bhnd.shape == K_bhnd_rand.shape
 # assert V_bhnd.shape == V_bhnd_rand.shape
 # assert dO_bhnd.shape == dO_bhnd_rand.shape
+
+# # **************************************************
+# # Reference forward and backward
+# # **************************************************
+# out_ref, q_ref, k_ref, v_ref = reference_forward_tiled(Q_bhnd, K_bhnd, V_bhnd, causal)
+# out_ref = out_ref.transpose(1, 2).contiguous()
 
 # **************************************************
 # AITER forward and backward
@@ -249,6 +315,9 @@ dO_tk = dO_bhnd.transpose(1, 2).bfloat16().clone().contiguous()
 O_tk = torch.zeros_like(out_aiter_bnhd).bfloat16().clone().contiguous()
 L_tk = torch.zeros((b, h_q, n, 1), device='cuda').float().transpose(-1, -2).contiguous()
 
+O_tk_simple = torch.zeros_like(out_aiter_bnhd).bfloat16().clone().contiguous()
+L_tk_simple = torch.zeros((b, h_q, n, 1), device='cuda').float().transpose(-1, -2).contiguous()
+
 # Debug prints
 print("=== TENSOR DEBUG INFO ===")
 print(f"Q_tk: shape={Q_tk.shape}, dtype={Q_tk.dtype}, device={Q_tk.device}, is_contiguous={Q_tk.is_contiguous()}")
@@ -271,7 +340,15 @@ torch.cuda.synchronize()
 print("TK forward completed successfully")
 print("TK [O]: ", O_tk[0, 0, :num_print, 0], "Max:", O_tk.max().item())
 print("TK [L]: ", L_tk[0, 0, 0, :num_print], "Max:", L_tk.max().item())
-breakpoint()
+
+# print("Calling TK forward simple kernel...")
+# tk_kernel_fwd_simple.dispatch_fwd(Q_tk, K_tk, V_tk, O_tk_simple, L_tk_simple)
+# torch.cuda.synchronize()
+# print("TK forward simple completed successfully")
+# print("TK [O]: ", O_tk_simple[0, 0, :num_print, 0], "Max:", O_tk_simple.max().item())
+# print("TK [L]: ", L_tk_simple[0, 0, 0, :num_print], "Max:", L_tk_simple.max().item())
+
+# breakpoint()
 
 # L_tk = L_tiled.float().contiguous()
 
@@ -369,10 +446,11 @@ print(f"ThunderKittens performance: {eff_tk:.2f} TFLOPS for {b=} h_q={h_q} h_kv=
 # Comparisons
 # **************************************************
 
-# TK vs AITER
-print(f"\nTK vs AITER comparison:")
+# TK vs REF
 print("\nO outputs:")
 print("TK: ", O_tk[0, 0, :num_print, 0], "Max:", O_tk.max().item())
+# print("TK simple: ", O_tk_simple[0, 0, :num_print, 0], "Max:", O_tk_simple.max().item())
+# print("REF: ", out_ref[0, 0, :num_print, 0], "Max:", out_ref.max().item())
 print("AITER: ", out_aiter_bnhd[0, 0, :num_print, 0], "Max:", out_aiter_bnhd.max().item())
 
 print()
@@ -395,6 +473,21 @@ print("Gradient Q outputs:")
 print("TK: ", dQ_tk[0, 0, 0, :num_print], "Max:", dQ_tk.max().item())
 print("AITER: ", q_grad_aiter_bnhd[0, 0, 0, :num_print], "Max:", q_grad_aiter_bnhd.max().item())
 
+# # TK vs TK simple
+# print(f"\nRobustness checks (TK vs TK simple):") 
+# o_diff, o_err_cnt, o_total, o_rel_error, o_l2_error, o_cos, o_mask = robustness_check(O_tk, O_tk_simple)
+# print(f"O: max_abs={o_diff.max().item():.6f}, max_rel={o_rel_error:.4f}, "
+#       f"rel_l2={o_l2_error:.4f}, cos={o_cos:.6f}, "
+#       f"errors={o_err_cnt}/{o_total} ({100*o_err_cnt/o_total:.4f}%)")
+
+# # **************************************************
+# # TK vs REF (robust tolerances & metrics)
+# # **************************************************
+# print(f"\nRobustness checks (TK vs REF):") 
+# o_diff, o_err_cnt, o_total, o_rel_error, o_l2_error, o_cos, o_mask = robustness_check(O_tk, out_ref)
+# print(f"O: max_abs={o_diff.max().item():.6f}, max_rel={o_rel_error:.4f}, "
+#       f"rel_l2={o_l2_error:.4f}, cos={o_cos:.6f}, "
+#       f"errors={o_err_cnt}/{o_total} ({100*o_err_cnt/o_total:.4f}%)")
 
 # **************************************************
 # TK vs AITER (robust tolerances & metrics)

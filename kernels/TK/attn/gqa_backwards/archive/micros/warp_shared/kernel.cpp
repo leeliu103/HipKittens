@@ -30,36 +30,21 @@ void micro_tk(const micro_globals g) {
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
     st_bf<n, d, ducks::st_layout::row> (&tile_smem)[NUM_WARPS] = al.allocate<st_bf<n, d, ducks::st_layout::row>, NUM_WARPS>();
-
-    // preswizzling
-    using T = typename st_bf<n, d>::dtype;
-    constexpr int bytes_per_thread = 16;
-    constexpr int bytes_per_memcpy = bytes_per_thread * WARP_THREADS;
-    constexpr int memcpy_per_tile = n * d * sizeof(T) / bytes_per_memcpy;
-    uint32_t swizzled_offsets[memcpy_per_tile];
-    prefill_swizzled_offsets<2, false>(tile_smem[warpid()], g.in, swizzled_offsets);
-    __builtin_amdgcn_s_waitcnt(0);
-    __builtin_amdgcn_s_barrier();
-    __syncthreads();
-
     // load to smem
-    load<2, false>(tile_smem[warpid()], g.in, {0, 0, i, 0}, swizzled_offsets);
+    load<2, false>(tile_smem[warpid()], g.in, {0, 0, i, 0});
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_s_barrier();
-    __syncthreads();
+    __builtin_amdgcn_sched_barrier(0);
 
     // load to registers
     rt_bf<n, d, row_l> tile;
     load(tile, tile_smem[warpid()]);
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_s_barrier();
-    __syncthreads();
+    __builtin_amdgcn_sched_barrier(0);
 
     // store output
     store(g.out, tile, {0, 0, i, 0});
-    __builtin_amdgcn_s_waitcnt(0);
-    __builtin_amdgcn_s_barrier();
-    __syncthreads();
 }
 
 void dispatch_micro(micro_globals g) {

@@ -133,7 +133,7 @@ b = 16
 h_q = 64  # number of query heads  
 h_kv = 8  # number of key/value heads (for GQA)
 group_size = h_q // h_kv  # queries per KV head group
-n = 1024
+n = 8192
 d = 128
 dtype = torch.bfloat16
 mean = 10
@@ -322,18 +322,19 @@ print("AITER: ", out_aiter_bnhd[0, 0, :num_print, 0], "Max:", out_aiter_bnhd.max
 
 print()
 print("\nGradient K outputs:")
-print("TK: ", dK_tk[0, 0, :num_print, :num_print], "Max:", dK_tk.max().item())
-print("AITER: ", k_grad_aiter_bnhd[0, 0, :num_print, :num_print], "Max:", k_grad_aiter_bnhd.max().item())
+print("TK: ", dK_tk[0, 0, 0, :num_print], "Max:", dK_tk.max().item())
+print("AITER: ", k_grad_aiter_bnhd[0, 0, 0, :num_print], "Max:", k_grad_aiter_bnhd.max().item())
 
 print()
 print("Gradient V outputs:")
-print("TK: ", dV_tk[0, 0, :num_print, :num_print], "Max:", dV_tk.max().item())
-print("AITER: ", v_grad_aiter_bnhd[0, 0, :num_print, :num_print], "Max:", v_grad_aiter_bnhd.max().item())
+print("TK: ", dV_tk[0, 0, 0, :num_print], "Max:", dV_tk.max().item())
+print("AITER: ", v_grad_aiter_bnhd[0, 0, 0, :num_print], "Max:", v_grad_aiter_bnhd.max().item())
 
 print()
 print("Gradient Q outputs:")
-print("TK: ", dQ_tk[0, 0, :num_print, :num_print], "Max:", dQ_tk.max().item())
-print("AITER: ", q_grad_aiter_bnhd[0, 0, :num_print, :num_print], "Max:", q_grad_aiter_bnhd.max().item())
+print("TK: ", dQ_tk[0, 0, 0, :num_print], "Max:", dQ_tk.max().item())
+print("AITER: ", q_grad_aiter_bnhd[0, 0, 0, :num_print], "Max:", q_grad_aiter_bnhd.max().item())
+# print("Diff: ", (dQ_tk - q_grad_aiter_bnhd)[0, :, 0, 32:48], "Max:", (dQ_tk - q_grad_aiter_bnhd).max().item())
 
 
 # **************************************************

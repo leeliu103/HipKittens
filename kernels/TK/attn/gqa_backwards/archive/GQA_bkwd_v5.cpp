@@ -231,35 +231,43 @@ __device__ inline static void atomic_pk_add_bf16_with_warpid(const GL &dst, cons
     // int col_offset = (laneid/src.tile_size_row) * 4 + warpid * 16;
     // int row_offset = laneid%(src.tile_size_row);
     int lane_offset = laneid * 4 + warpid * 256;
-    // int col = src.tile_size_col*j + col_offset;
-    // int row = src.tile_size_row*i + row_offset;
 
-    const U2 val_0 = base_types::convertor<U2, T2>::convert(src.tiles[0][0].data[0]);
-    const U2 val_1 = base_types::convertor<U2, T2>::convert(src.tiles[0][0].data[1]);
+    #pragma unroll
+    for(int i = 0; i < src.height; i++) {
+        #pragma unroll
+        for(int j = 0; j < src.width; j++) {
+            // int col = src.tile_size_col*j + col_offset;
+            // int row = src.tile_size_row*i + row_offset;
+            int tile_offset = i * row_stride * src.tile_size_row;
 
-    // uint32_t byte_offset_0 = static_cast<uint32_t>((row * row_stride + col + 0) * sizeof(U));
-    // uint32_t byte_offset_1 = static_cast<uint32_t>((row * row_stride + col + 2) * sizeof(U));
-    uint32_t byte_offset_0 = static_cast<uint32_t>((lane_offset) * sizeof(U));
-    uint32_t byte_offset_1 = static_cast<uint32_t>((lane_offset + 2) * sizeof(U));
+            const U2 val_0 = base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[0]);
+            const U2 val_1 = base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[1]);
 
-    uint32_t val_0_bits = *reinterpret_cast<const uint32_t*>(&val_0);
-    uint32_t val_1_bits = *reinterpret_cast<const uint32_t*>(&val_1);
+            // uint32_t byte_offset_0 = static_cast<uint32_t>((row * row_stride + col + 0) * sizeof(U));
+            // uint32_t byte_offset_1 = static_cast<uint32_t>((row * row_stride + col + 2) * sizeof(U));
+            uint32_t byte_offset_0 = static_cast<uint32_t>((tile_offset + lane_offset) * sizeof(U));
+            uint32_t byte_offset_1 = static_cast<uint32_t>((tile_offset + lane_offset + 2) * sizeof(U));
 
-    asm volatile(
-        "buffer_atomic_pk_add_bf16 %0, %1, %2, 0 offen\n"
-        :
-        : "v"(val_0_bits), "v"(byte_offset_0),      // %0, %1
-            "s"(*(i32x4*)&br)                         // %8
-        : "memory"
-    );
+            uint32_t val_0_bits = *reinterpret_cast<const uint32_t*>(&val_0);
+            uint32_t val_1_bits = *reinterpret_cast<const uint32_t*>(&val_1);
 
-    asm volatile(
-        "buffer_atomic_pk_add_bf16 %0, %1, %2, 0 offen\n"
-        :
-        : "v"(val_1_bits), "v"(byte_offset_1),      // %2, %3
-            "s"(*(i32x4*)&br)                         // %8
-        : "memory"
-    );
+            asm volatile(
+                "buffer_atomic_pk_add_bf16 %0, %1, %2, 0 offen\n"
+                :
+                : "v"(val_0_bits), "v"(byte_offset_0),      // %0, %1
+                  "s"(*(i32x4*)&br)                         // %8
+                : "memory"
+            );
+
+            asm volatile(
+                "buffer_atomic_pk_add_bf16 %0, %1, %2, 0 offen\n"
+                :
+                : "v"(val_1_bits), "v"(byte_offset_1),      // %2, %3
+                  "s"(*(i32x4*)&br)                         // %8
+                : "memory"
+            );
+        }
+    }
 }
 
 template<int axis, ducks::rt::accumulator_row_layout RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
@@ -455,37 +463,20 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
             __builtin_amdgcn_sched_barrier(0);
 
             // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+            load(dP_ij_bf16_col_T, attn_i_smem);
+            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+            asm volatile("s_waitcnt lgkmcnt(0)");
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
 
-            if (stagger) {
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-            } else {
-                load(dP_ij_bf16_col_T, attn_i_smem);
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4, 0}, warpid * 2);
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4, 0}, warpid * 2 + 1);
-                __builtin_amdgcn_s_setprio(0);
-            }
+            __builtin_amdgcn_s_setprio(1);
+            zero(dQ_i_T);
+            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+            swap_layout_and_transpose(dQ_i, dQ_i_T);
+            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4, 0}, warpid);
+            __builtin_amdgcn_s_setprio(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
         }
         // dot slice 1
         {
@@ -552,64 +543,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
             __builtin_amdgcn_s_barrier();
             __builtin_amdgcn_sched_barrier(0);
 
-            if (stagger) {
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
+            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+            load(dP_ij_bf16_col_T, attn_i_smem);
+            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+            asm volatile("s_waitcnt lgkmcnt(0)");
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
 
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-                // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-                load(dP_ij_bf16_col_T, attn_i_smem);
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2}));
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 1, 0}, (warpid - 4) * 2);
-                __builtin_amdgcn_s_setprio(0);
-
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2 + 1}));
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 1, 0}, (warpid - 4) * 2 + 1);
-                __builtin_amdgcn_s_setprio(0);
-            } else {
-                // // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-                // load(dP_ij_bf16_col_T, attn_i_smem);
-                // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-                // asm volatile("s_waitcnt lgkmcnt(0)");
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-
-                // __builtin_amdgcn_s_setprio(1);
-                // zero(dQ_i_T);
-                // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                // swap_layout_and_transpose(dQ_i, dQ_i_T);
-                // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 1, 0}, warpid * 2);
-                // __builtin_amdgcn_s_setprio(0);
-
-                // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-                // asm volatile("s_waitcnt lgkmcnt(0)");
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-
-                // __builtin_amdgcn_s_setprio(1);
-                // zero(dQ_i_T);
-                // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                // swap_layout_and_transpose(dQ_i, dQ_i_T);
-                // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 1, 0}, warpid * 2 + 1);
-                // __builtin_amdgcn_s_setprio(0);
-            }
+            __builtin_amdgcn_s_setprio(1);
+            zero(dQ_i_T);
+            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+            swap_layout_and_transpose(dQ_i, dQ_i_T);
+            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 1, 0}, warpid);
+            __builtin_amdgcn_s_setprio(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
         }
         // dot slice 2
         {
@@ -675,39 +623,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
             __builtin_amdgcn_s_barrier();
             __builtin_amdgcn_sched_barrier(0);
 
-            if (stagger) {
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
+            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+            load(dP_ij_bf16_col_T, attn_i_smem);
+            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+            asm volatile("s_waitcnt lgkmcnt(0)");
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
 
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-            } else {
-                // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-                load(dP_ij_bf16_col_T, attn_i_smem);
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 2, 0}, warpid * 2);
-                __builtin_amdgcn_s_setprio(0);
-
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 2, 0}, warpid * 2 + 1);
-                __builtin_amdgcn_s_setprio(0);
-            }
+            __builtin_amdgcn_s_setprio(1);
+            zero(dQ_i_T);
+            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+            swap_layout_and_transpose(dQ_i, dQ_i_T);
+            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 2, 0}, warpid);
+            __builtin_amdgcn_s_setprio(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
         }
         // dot slice 3
         {
@@ -773,64 +703,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
             __builtin_amdgcn_s_barrier();
             __builtin_amdgcn_sched_barrier(0);
 
-            if (stagger) {
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
+            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+            load(dP_ij_bf16_col_T, attn_i_smem);
+            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+            __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
 
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-                // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-                load(dP_ij_bf16_col_T, attn_i_smem);
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2}));
-                __builtin_amdgcn_s_waitcnt(0);
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 3, 0}, (warpid - 4) * 2);
-                __builtin_amdgcn_s_setprio(0);
-
-                load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2 + 1}));
-                __builtin_amdgcn_s_waitcnt(0);
-                __builtin_amdgcn_s_barrier();
-                __builtin_amdgcn_sched_barrier(0);
-
-                __builtin_amdgcn_s_setprio(1);
-                zero(dQ_i_T);
-                mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                swap_layout_and_transpose(dQ_i, dQ_i_T);
-                atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 3, 0}, (warpid - 4) * 2 + 1);
-                __builtin_amdgcn_s_setprio(0);
-            } else {
-                // // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-                // load(dP_ij_bf16_col_T, attn_i_smem);
-                // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-                // __builtin_amdgcn_s_waitcnt(0);
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-
-                // __builtin_amdgcn_s_setprio(1);
-                // zero(dQ_i_T);
-                // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                // swap_layout_and_transpose(dQ_i, dQ_i_T);
-                // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 3, 0}, warpid * 2);
-                // __builtin_amdgcn_s_setprio(0);
-
-                // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-                // __builtin_amdgcn_s_waitcnt(0);
-                // __builtin_amdgcn_s_barrier();
-                // __builtin_amdgcn_sched_barrier(0);
-
-                // __builtin_amdgcn_s_setprio(1);
-                // zero(dQ_i_T);
-                // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-                // swap_layout_and_transpose(dQ_i, dQ_i_T);
-                // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 3, 0}, warpid * 2 + 1);
-                // __builtin_amdgcn_s_setprio(0);
-            }
+            __builtin_amdgcn_s_setprio(1);
+            zero(dQ_i_T);
+            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+            swap_layout_and_transpose(dQ_i, dQ_i_T);
+            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, q_head_idx, q_seq_idx * 4 + 3, 0}, warpid);
+            __builtin_amdgcn_s_setprio(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
         }
     }
 
@@ -898,39 +785,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
-        if (stagger) {
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
+        // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+        load(dP_ij_bf16_col_T, attn_i_smem);
+        load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
 
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-        } else {
-            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-            load(dP_ij_bf16_col_T, attn_i_smem);
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4, 0}, warpid * 2);
-            __builtin_amdgcn_s_setprio(0);
-
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4, 0}, warpid * 2 + 1);
-            __builtin_amdgcn_s_setprio(0);
-        }
+        __builtin_amdgcn_s_setprio(1);
+        zero(dQ_i_T);
+        mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+        swap_layout_and_transpose(dQ_i, dQ_i_T);
+        atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4, 0}, warpid);
+        __builtin_amdgcn_s_setprio(0);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
     }
     // dot slice 1
     {
@@ -995,63 +864,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
-        if (stagger) {
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
+        // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+        load(dP_ij_bf16_col_T, attn_i_smem);
+        load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
 
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-            load(dP_ij_bf16_col_T, attn_i_smem);
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2}));
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 1, 0}, (warpid - 4) * 2);
-            __builtin_amdgcn_s_setprio(0);
-
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2 + 1}));
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 1, 0}, (warpid - 4) * 2 + 1);
-            __builtin_amdgcn_s_setprio(0);
-        } else {
-            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-            // load(dP_ij_bf16_col_T, attn_i_smem);
-            // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-            // asm volatile("s_waitcnt lgkmcnt(0)");
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-
-            // __builtin_amdgcn_s_setprio(1);
-            // zero(dQ_i_T);
-            // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            // swap_layout_and_transpose(dQ_i, dQ_i_T);
-            // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 1, 0}, warpid * 2);
-            // __builtin_amdgcn_s_setprio(0);
-
-            // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-            // asm volatile("s_waitcnt lgkmcnt(0)");
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-
-            // __builtin_amdgcn_s_setprio(1);
-            // zero(dQ_i_T);
-            // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            // swap_layout_and_transpose(dQ_i, dQ_i_T);
-            // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 1, 0}, warpid * 2 + 1);
-            // __builtin_amdgcn_s_setprio(0);
-        }
+        __builtin_amdgcn_s_setprio(1);
+        zero(dQ_i_T);
+        mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+        swap_layout_and_transpose(dQ_i, dQ_i_T);
+        atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 1, 0}, warpid);
+        __builtin_amdgcn_s_setprio(0);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
     }
     // dot slice 2
     {
@@ -1116,39 +943,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
-        if (stagger) {
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
+        // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+        load(dP_ij_bf16_col_T, attn_i_smem);
+        load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
 
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-        } else {
-            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-            load(dP_ij_bf16_col_T, attn_i_smem);
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 2, 0}, warpid * 2);
-            __builtin_amdgcn_s_setprio(0);
-
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-            asm volatile("s_waitcnt lgkmcnt(0)");
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 2, 0}, warpid * 2 + 1);
-            __builtin_amdgcn_s_setprio(0);
-        }
+        __builtin_amdgcn_s_setprio(1);
+        zero(dQ_i_T);
+        mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+        swap_layout_and_transpose(dQ_i, dQ_i_T);
+        atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 2, 0}, warpid);
+        __builtin_amdgcn_s_setprio(0);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
     }
     // dot slice 3
     {
@@ -1213,63 +1022,21 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
 
-        if (stagger) {
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
+        // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
+        load(dP_ij_bf16_col_T, attn_i_smem);
+        load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid}));
+        __builtin_amdgcn_s_waitcnt(0);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
 
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-            load(dP_ij_bf16_col_T, attn_i_smem);
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2}));
-            __builtin_amdgcn_s_waitcnt(0);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 3, 0}, (warpid - 4) * 2);
-            __builtin_amdgcn_s_setprio(0);
-
-            load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, (warpid - 4) * 2 + 1}));
-            __builtin_amdgcn_s_waitcnt(0);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-
-            __builtin_amdgcn_s_setprio(1);
-            zero(dQ_i_T);
-            mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            swap_layout_and_transpose(dQ_i, dQ_i_T);
-            atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 3, 0}, (warpid - 4) * 2 + 1);
-            __builtin_amdgcn_s_setprio(0);
-        } else {
-            // 15. dQ_i += dS_ij @ K_j (32x16)=(32x256)x(256x16)
-            // load(dP_ij_bf16_col_T, attn_i_smem);
-            // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2}));
-            // __builtin_amdgcn_s_waitcnt(0);
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-
-            // __builtin_amdgcn_s_setprio(1);
-            // zero(dQ_i_T);
-            // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            // swap_layout_and_transpose(dQ_i, dQ_i_T);
-            // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 3, 0}, warpid * 2);
-            // __builtin_amdgcn_s_setprio(0);
-
-            // load(K_j_col, subtile_inplace<256, 16>(K_j_smem, {0, warpid * 2 + 1}));
-            // __builtin_amdgcn_s_waitcnt(0);
-            // __builtin_amdgcn_s_barrier();
-            // __builtin_amdgcn_sched_barrier(0);
-
-            // __builtin_amdgcn_s_setprio(1);
-            // zero(dQ_i_T);
-            // mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
-            // swap_layout_and_transpose(dQ_i, dQ_i_T);
-            // atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 3, 0}, warpid * 2 + 1);
-            // __builtin_amdgcn_s_setprio(0);
-        }
+        __builtin_amdgcn_s_setprio(1);
+        zero(dQ_i_T);
+        mma_AtB(dQ_i_T, K_j_col, dP_ij_bf16_col_T,  dQ_i_T);
+        swap_layout_and_transpose(dQ_i, dQ_i_T);
+        atomic_pk_add_bf16_with_warpid<2>(g.dQg, dQ_i, {batch_idx, first_q_head + GROUP_SIZE - 1, (num_steps_per_head - 1) * 4 + 3, 0}, warpid);
+        __builtin_amdgcn_s_setprio(0);
+        __builtin_amdgcn_s_barrier();
+        __builtin_amdgcn_sched_barrier(0);
     }
 
     if (!stagger) {
