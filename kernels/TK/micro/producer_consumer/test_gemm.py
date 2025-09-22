@@ -13,12 +13,9 @@ parser.add_argument('--profile', type=bool, default=False)
 args = parser.parse_args()
 
 # Inputs
-# M = 192*40
-# N = 192*40
-# K = 192*40
-M = 9216
-N = 9216
-K = 9216
+M = 192*40    
+N = 192*40    
+K = 192*40    
 # A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
 # B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
 # Bt = B.t().contiguous()  # Transpose B for the kernel
@@ -28,8 +25,8 @@ num_blocks_y = (N / 256)
 print(f"{num_blocks_x=} mod 32 {num_blocks_x % 32}, {num_blocks_y=} mod 32 {num_blocks_y % 32}\n")
 
 if args.profile:
-    num_warmup = 10
-    num_iters = 20
+    num_warmup = 100
+    num_iters = 100
 else:
     num_warmup = 0
     num_iters = 1
