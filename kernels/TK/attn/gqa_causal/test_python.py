@@ -1,8 +1,6 @@
 import torch
 import tk_kernel
 import random
-import time
-import math
 from torch.nn.functional import scaled_dot_product_attention
 import aiter
 
@@ -14,10 +12,10 @@ torch.set_printoptions(
 )
 
 # Inputs
-B = 1
-H = 1
-H_KV = 1
-N = 512
+B = 16
+H = 64
+H_KV = 8
+N = 1024
 D = 128
 causal = True
 dtype = torch.bfloat16
@@ -56,16 +54,16 @@ flops_ref = flops(B, N, H, D, causal)
 
 # Reference matmul using AITER
 for _ in range(num_warmup):
-    q = torch.ones(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    k = torch.ones(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
+    q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
+    k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     v = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     out_ref, lse_ref = aiter.flash_attn_func(q, k, v, causal=causal, return_lse=True, deterministic=True)
 timings_ref = []
 torch.manual_seed(0)
 random.seed(0)
 for _ in range(num_iters):
-    q = torch.ones(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    k = torch.ones(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
+    q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
+    k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     v = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     torch.cuda.synchronize()
     start_event.record()
@@ -85,8 +83,8 @@ print(f"AITER (AMD) reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N
 for _ in range(num_warmup):
     out = torch.zeros(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
     lse = torch.zeros(B, H, 1, N, dtype=torch.float32, device='cuda', requires_grad=True)
-    q = torch.ones(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    k = torch.ones(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
+    q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
+    k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     v = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     tk_kernel.dispatch_micro(q, k, v, out, lse)
 timings = []
@@ -95,8 +93,8 @@ lse = torch.zeros(B, H, 1, N, dtype=torch.float32, device='cuda', requires_grad=
 torch.manual_seed(0)
 random.seed(0)
 for _ in range(num_iters):
-    q = torch.ones(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    k = torch.ones(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
+    q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
+    k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     v = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     torch.cuda.synchronize()
     start_event.record()
@@ -112,15 +110,15 @@ print(f"Average execution time: {avg_time:.4f} ms")
 print(f"Performance: {eff:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
 
 # Compare against reference
-num_print = 8
-print(f"TK vs AITER comparison:")
-print("\nO outputs:")
-print("TK: ", out[0, 0, :num_print, 0], "Max:", out.max().item())
-print("AITER: ", out_ref[0, 0, :num_print, 0], "Max:", out_ref.max().item())
+# num_print = 8
+# print(f"TK vs AITER comparison:")
+# print("\nO outputs:")
+# print("TK: ", out[0, 0, :num_print, 0], "Max:", out.max().item())
+# print("AITER: ", out_ref[0, 0, :num_print, 0], "Max:", out_ref.max().item())
 
-print("\nLSE outputs:")
-print("TK: ", lse[0, 0, 0, :num_print], "Max:", lse.max().item())
-print("AITER: ", lse_ref[0, 0, :num_print], "Max:", lse_ref.max().item())
+# print("\nLSE outputs:")
+# print("TK: ", lse[0, 0, 0, :num_print], "Max:", lse.max().item())
+# print("AITER: ", lse_ref[0, 0, :num_print], "Max:", lse_ref.max().item())
 
 print("\nRobustness check:")
 o_diff, o_err_cnt, o_total, o_rel_error, o_l2_error, o_cos, o_mask = robustness_check(out, out_ref)
@@ -135,29 +133,56 @@ print(f"LSE: max_abs={l_diff.max().item():.6f}, max_rel={l_rel_error:.4f}, "
 
 # O-DIFFs
 
-warp_0_diff = o_diff[:, :32, :, 0:]
-print(f"Warp 0 diff: {warp_0_diff.max().item():.6f}")
+# warp_0_diff = o_diff[:, :32, :, 0:]
+# print(f"Warp 0 diff: {warp_0_diff.max().item():.6f}")
 
-warp_1_diff = o_diff[:, 32:64, :, 0:]
-print(f"Warp 1 diff: {warp_1_diff.max().item():.6f}")
+# warp_1_diff = o_diff[:, 32:64, :, 0:]
+# print(f"Warp 1 diff: {warp_1_diff.max().item():.6f}")
 
-warp_2_diff = o_diff[:, 64:96, :, 0:]
-print(f"Warp 2 diff: {warp_2_diff.max().item():.6f}")
+# warp_2_diff = o_diff[:, 64:96, :, 0:]
+# print(f"Warp 2 diff: {warp_2_diff.max().item():.6f}")
 
-warp_3_diff = o_diff[:, 96:128, :, 0:]
-print(f"Warp 3 diff: {warp_3_diff.max().item():.6f}")
+# warp_3_diff = o_diff[:, 96:128, :, 0:]
+# print(f"Warp 3 diff: {warp_3_diff.max().item():.6f}")
 
-warp_4_diff = o_diff[:, 128:160, :, 0:]
-print(f"Warp 4 diff: {warp_4_diff.max().item():.6f}")
+# warp_4_diff = o_diff[:, 128:160, :, 0:]
+# print(f"Warp 4 diff: {warp_4_diff.max().item():.6f}")
 
-warp_5_diff = o_diff[:, 160:192, :, 0:]
-print(f"Warp 5 diff: {warp_5_diff.max().item():.6f}")
+# warp_5_diff = o_diff[:, 160:192, :, 0:]
+# print(f"Warp 5 diff: {warp_5_diff.max().item():.6f}")
 
-warp_6_diff = o_diff[:, 192:224, :, 0:]
-print(f"Warp 6 diff: {warp_6_diff.max().item():.6f}")
+# warp_6_diff = o_diff[:, 192:224, :, 0:]
+# print(f"Warp 6 diff: {warp_6_diff.max().item():.6f}")
 
-warp_7_diff = o_diff[:, 224:256, :, 0:]
-print(f"Warp 7 diff: {warp_7_diff.max().item():.6f}")
+# warp_7_diff = o_diff[:, 224:256, :, 0:]
+# print(f"Warp 7 diff: {warp_7_diff.max().item():.6f}")
+
+
+start = 0
+
+# warp_8_diff = o_diff[:, 256:288, :, start:]
+# print(f"Warp 0 diff: {warp_8_diff.max().item():.6f}")
+
+# warp_9_diff = o_diff[:, 288:320, :, start:]
+# print(f"Warp 1 diff: {warp_9_diff.max().item():.6f}")
+
+# warp_10_diff = o_diff[:, 320:352, :, start:]
+# print(f"Warp 2 diff: {warp_10_diff.max().item():.6f}")
+
+# warp_11_diff = o_diff[:, 352:384, :, start:]
+# print(f"Warp 3 diff: {warp_11_diff.max().item():.6f}")
+
+# warp_12_diff = o_diff[:, 384:416, :, start:]
+# print(f"Warp 4 diff: {warp_12_diff.max().item():.6f}")
+
+# warp_13_diff = o_diff[:, 416:448, :, start:]
+# print(f"Warp 5 diff: {warp_13_diff.max().item():.6f}")
+
+# warp_14_diff = o_diff[:, 448:480, :, start:]
+# print(f"Warp 6 diff: {warp_14_diff.max().item():.6f}")
+
+# warp_15_diff = o_diff[:, 480:512, :, start:]
+# print(f"Warp 7 diff: {warp_15_diff.max().item():.6f}")
 
 # breakpoint()
 
