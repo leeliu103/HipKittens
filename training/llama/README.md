@@ -14,7 +14,7 @@ We breakdown this section into three parts: 1) how to set up a training config a
 To train a new model, construct a config.yaml file at ```train/configs/experiment/```. You can launch using the following script:
 ```
 cd train/
-python run.py experiment=example/llama-1b trainer.devices=8
+python train/run.py experiment=example/llama-1b trainer.devices=8
 ```
 
 
