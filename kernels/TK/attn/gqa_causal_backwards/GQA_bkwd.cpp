@@ -1,11 +1,11 @@
 #include "kittens.cuh"
 #include "pyutils/pyutils.cuh"
 
-constexpr int ATTN_B = 1; // batch size
-constexpr int ATTN_H_Q = 1; // number of query heads
-constexpr int ATTN_H_KV = 1; // number of key/value heads (for GQA)
+constexpr int ATTN_B = 16; // batch size
+constexpr int ATTN_H_Q = 64; // number of query heads
+constexpr int ATTN_H_KV = 8; // number of key/value heads (for GQA)
 constexpr int GROUP_SIZE = ATTN_H_Q / ATTN_H_KV; // queries per KV head group
-constexpr int ATTN_N = 256; // sequence length
+constexpr int ATTN_N = 1024; // sequence length
 constexpr int ATTN_D = 128; // dimension
 constexpr int STEP_QO = 64; // block size for QO
 constexpr int BLOCK_SIZE_KV = 256; // block size for KV
@@ -360,7 +360,7 @@ __device__ inline void mask_causal_q_kv_accum_col(
     const typename base_types::packing<typename RT::dtype>::unpacked_type &val
 ) {
     // Whole-tile fast paths
-    if (k_abs > q_abs + (DOT_SLICE_QO - 1)) {          // entirely in the future
+    if (k_abs > q_abs + (DOT_SLICE_QO - 1)) {  // tile entirely in the future
         if constexpr (std::is_same_v<typename RT::dtype,float>) {
             if (val == 0.0f) { zero(dst); } 
             else { neg_infty(dst); }
@@ -369,29 +369,30 @@ __device__ inline void mask_causal_q_kv_accum_col(
         }  // or neg_infty for other dtypes if needed
         return;
     }
-    if (k_abs + WARP_SIZE_KV - 1 <= q_abs) return;     // entirely in the past
+    if (k_abs + WARP_SIZE_KV - 1 <= q_abs) return;  // tile entirely in the past
+
+    // apply causal mask
 
     const int lane = kittens::laneid();
-    const int col16 = lane & 15;    // column inside the 16-wide sub-tile
-    const int ro    = lane >> 4;    // 0 or 1: which 8-row half (rows 0..7 or 8..15)
+    const int col16 = lane & 15;      // 0..15 (each thread owns 4 elts down the cols)
+    const int rowgrp = lane >> 4;     // 0 or 1
 
     #pragma unroll
     for (int i = 0; i < dst.height; ++i) {
-        const int base16 = i * 16;  // row block stride
+        const int base16 = i * 16;
 
         #pragma unroll
-        for (int j = 0; j < dst.width; ++j) {          // j = 0 (cols 0..15), j = 1 (cols 16..31)
+        for (int j = 0; j < dst.width; ++j) {   // j=0,1 for 32 cols
             const int col_abs = j * 16 + col16;
 
-            // This lane owns 4 rows in this 16-row block at that column.
-            // Rows are contiguous within the half selected by 'ro'.
-            const int r0 = base16 + ro*8 + 0;
-            const int r1 = base16 + ro*8 + 1;
-            const int r2 = base16 + ro*8 + 2;
-            const int r3 = base16 + ro*8 + 3;
+            // Four consecutive rows within the 16-row block:
+            const int r0 = base16 + rowgrp*4 + 0;
+            const int r1 = base16 + rowgrp*4 + 1;
+            const int r2 = base16 + rowgrp*4 + 2;
+            const int r3 = base16 + rowgrp*4 + 3;
 
-            auto &d0 = dst.tiles[i][j].data[0];  // .x, .y
-            auto &d1 = dst.tiles[i][j].data[1];  // .x, .y
+            auto &d0 = dst.tiles[i][j].data[0];
+            auto &d1 = dst.tiles[i][j].data[1];
 
             if (k_abs + col_abs > q_abs + r0) d0.x = val;
             if (k_abs + col_abs > q_abs + r1) d0.y = val;
@@ -478,8 +479,6 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
     if (stagger) {
         __builtin_amdgcn_s_barrier();
     }
-
-    int condition = (laneid() == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0);
 
     // 8. Process all query heads in this KV group
     // 9. for 1 <= i <= T_r (1024 / 32 = 32)  
