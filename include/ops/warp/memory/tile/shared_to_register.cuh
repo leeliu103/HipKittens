@@ -269,56 +269,120 @@ __device__ inline static void load(RT &dst, const ST &src) {
         constexpr int shared_subtiles_per_register_subtile_row = RT::base_tile_cols / ST::underlying_subtile_cols;
         constexpr int shared_subtiles_per_register_subtile_col = RT::base_tile_rows / ST::underlying_subtile_rows;
 
-        const int col = (col_offset) % ST::underlying_subtile_cols;
-        const int shared_base_col = (col_offset) / ST::underlying_subtile_cols;
-        #pragma unroll
-        for (int k = 0; k < RT::base_tile_num_strides; k++) {
-            const int row = (row_offset + k * RT::base_tile_elements_per_stride_group) % ST::underlying_subtile_rows;
-            const int shared_base_row = (row_offset + k * RT::base_tile_elements_per_stride_group) / ST::underlying_subtile_rows;
+        constexpr int stride_groups_per_shared_subtile_col = ST::underlying_subtile_rows / RT::base_tile_elements_per_stride_group;
 
-            const int shared_base_subtile_id = shared_base_row * ST::underlying_subtiles_per_row + shared_base_col;
-            const int shared_base_offset = shared_base_subtile_id * ST::underlying_subtile_bytes;
-
-            const uint32_t swizzled_offset = src.swizzle({row, col});
-            const uint32_t next_swizzled_offset = src.swizzle({row + 4, col});
-            const uint32_t addr = src_ptr + swizzled_offset + shared_base_offset;
-            const uint32_t next_addr = src_ptr + next_swizzled_offset + shared_base_offset;
-
-            int idx = k * RT::base_tile_stride / packing;
-
+        // Special handling for cases where there is a constant offset between stride groups
+        if constexpr (stride_groups_per_shared_subtile_col) {
+            const int col = (col_offset) % ST::underlying_subtile_cols;
+            const int shared_base_col = (col_offset) / ST::underlying_subtile_cols;
             #pragma unroll
-            for (int i = 0; i < RT::height; i++) {
-                const int shared_row = i * shared_subtiles_per_register_subtile_col;
-                #pragma unroll
-                for (int j = 0; j < RT::width; j++) {
-                    const int shared_col = j * shared_subtiles_per_register_subtile_row;
-                    const int shared_subtile_id = shared_row * ST::underlying_subtiles_per_row + shared_col;
-                    const int offset = shared_subtile_id * ST::underlying_subtile_bytes;
+            for (int l = 0; l < stride_groups_per_shared_subtile_col; l++) {
+                const int row = row_offset + l * RT::base_tile_elements_per_stride_group;
 
-                    if constexpr (std::is_same_v<U2, bf16_2>) {
-                        // Use two ds_read_b64_tr_b16 for stride == 8, dtype == bf16
-                        if constexpr (RT::base_tile_stride == 8) {
-                            asm volatile(
-                                "ds_read_b64_tr_b16 %0, %2 offset:%4\n"
-                                "ds_read_b64_tr_b16 %1, %3 offset:%4\n"
-                                : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx])), 
-                                "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx + 2]))
-                                : "v"(addr), "v"(next_addr), "i"(offset)
-                                : "memory"
-                            );
-                        // Use one ds_read_b64_tr_b16 for stride == 4, dtype == bf16
-                        } else if constexpr (RT::base_tile_stride == 4) {
-                            asm volatile(
-                                "ds_read_b64_tr_b16 %0, %1 offset:%2\n"
-                                : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx]))
-                                : "v"(addr), "i"(offset)
-                                : "memory"
-                            );
-                        } else {
-                            static_assert(false, "Unsupported stride");
+                const uint32_t swizzled_offset = src.swizzle({row, col});
+                const uint32_t next_swizzled_offset = src.swizzle({row + 4, col});
+                const uint32_t addr = src_ptr + swizzled_offset;
+                const uint32_t next_addr = src_ptr + next_swizzled_offset;
+
+                #pragma unroll
+                for (int k = 0; k < RT::base_tile_num_strides / stride_groups_per_shared_subtile_col; k++) {
+                    const int shared_base_row = k;
+
+                    const int shared_base_subtile_id = shared_base_row * ST::underlying_subtiles_per_row + shared_base_col;
+                    const int shared_base_offset = shared_base_subtile_id * ST::underlying_subtile_bytes;
+
+                    int idx = k * RT::base_tile_stride / packing;
+
+                    #pragma unroll
+                    for (int i = 0; i < RT::height; i++) {
+                        const int shared_row = i * shared_subtiles_per_register_subtile_col;
+                        #pragma unroll
+                        for (int j = 0; j < RT::width; j++) {
+                            const int shared_col = j * shared_subtiles_per_register_subtile_row;
+                            const int shared_subtile_id = shared_row * ST::underlying_subtiles_per_row + shared_col;
+                            const int offset = shared_subtile_id * ST::underlying_subtile_bytes + shared_base_offset;
+
+                            if constexpr (std::is_same_v<U2, bf16_2>) {
+                                // Use two ds_read_b64_tr_b16 for stride == 8, dtype == bf16
+                                if constexpr (RT::base_tile_stride == 8) {
+                                    asm volatile(
+                                        "ds_read_b64_tr_b16 %0, %2 offset:%4\n"
+                                        "ds_read_b64_tr_b16 %1, %3 offset:%4\n"
+                                        : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx])), 
+                                        "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx + 2]))
+                                        : "v"(addr), "v"(next_addr), "i"(offset)
+                                        : "memory"
+                                    );
+                                // Use one ds_read_b64_tr_b16 for stride == 4, dtype == bf16
+                                } else if constexpr (RT::base_tile_stride == 4) {
+                                    asm volatile(
+                                        "ds_read_b64_tr_b16 %0, %1 offset:%2\n"
+                                        : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx]))
+                                        : "v"(addr), "i"(offset)
+                                        : "memory"
+                                    );
+                                } else {
+                                    static_assert(false, "Unsupported stride");
+                                }
+                            } else {
+                                static_assert(false, "Unsupported type");
+                            }
                         }
-                    } else {
-                        static_assert(false, "Unsupported type");
+                    }
+                } 
+            }
+        } else {
+            const int col = (col_offset) % ST::underlying_subtile_cols;
+            const int shared_base_col = (col_offset) / ST::underlying_subtile_cols;
+            #pragma unroll
+            for (int k = 0; k < RT::base_tile_num_strides; k++) {
+                const int row = (row_offset + k * RT::base_tile_elements_per_stride_group) % ST::underlying_subtile_rows;
+                const int shared_base_row = (row_offset + k * RT::base_tile_elements_per_stride_group) / ST::underlying_subtile_rows;
+
+                const int shared_base_subtile_id = shared_base_row * ST::underlying_subtiles_per_row + shared_base_col;
+                const int shared_base_offset = shared_base_subtile_id * ST::underlying_subtile_bytes;
+
+                const uint32_t swizzled_offset = src.swizzle({row, col});
+                const uint32_t next_swizzled_offset = src.swizzle({row + 4, col});
+                const uint32_t addr = src_ptr + swizzled_offset + shared_base_offset;
+                const uint32_t next_addr = src_ptr + next_swizzled_offset + shared_base_offset;
+
+                int idx = k * RT::base_tile_stride / packing;
+
+                #pragma unroll
+                for (int i = 0; i < RT::height; i++) {
+                    const int shared_row = i * shared_subtiles_per_register_subtile_col;
+                    #pragma unroll
+                    for (int j = 0; j < RT::width; j++) {
+                        const int shared_col = j * shared_subtiles_per_register_subtile_row;
+                        const int shared_subtile_id = shared_row * ST::underlying_subtiles_per_row + shared_col;
+                        const int offset = shared_subtile_id * ST::underlying_subtile_bytes;
+
+                        if constexpr (std::is_same_v<U2, bf16_2>) {
+                            // Use two ds_read_b64_tr_b16 for stride == 8, dtype == bf16
+                            if constexpr (RT::base_tile_stride == 8) {
+                                asm volatile(
+                                    "ds_read_b64_tr_b16 %0, %2 offset:%4\n"
+                                    "ds_read_b64_tr_b16 %1, %3 offset:%4\n"
+                                    : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx])), 
+                                    "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx + 2]))
+                                    : "v"(addr), "v"(next_addr), "i"(offset)
+                                    : "memory"
+                                );
+                            // Use one ds_read_b64_tr_b16 for stride == 4, dtype == bf16
+                            } else if constexpr (RT::base_tile_stride == 4) {
+                                asm volatile(
+                                    "ds_read_b64_tr_b16 %0, %1 offset:%2\n"
+                                    : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[idx]))
+                                    : "v"(addr), "i"(offset)
+                                    : "memory"
+                                );
+                            } else {
+                                static_assert(false, "Unsupported stride");
+                            }
+                        } else {
+                            static_assert(false, "Unsupported type");
+                        }
                     }
                 }
             }
