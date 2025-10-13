@@ -16,12 +16,12 @@ constexpr int NEW_COL_BLOCK_SIZE = BLOCK_SIZE * N_BLOCK;
 #define NUM_PRODUCER_THREADS (NUM_PRODUCER_WORKERS * kittens::WARP_THREADS)
 
 using G = kittens::group<NUM_PRODUCER_WORKERS>;
-using A_slice = rt_bf<BLOCK_SIZE, DOT_SLICE, row_l, rt_32x32_s>;
-using B_slice = rt_bf<BLOCK_SIZE, DOT_SLICE, row_l, rt_32x32_s>;
+using A_slice = rt_bf<BLOCK_SIZE, DOT_SLICE, row_l, rt_32x16_s>;
+using B_slice = rt_bf<BLOCK_SIZE, DOT_SLICE, row_l, rt_32x16_s>;
 
 #define M 192*40
-#define N 192*40
-#define K 192*40
+#define N 8192
+#define K 8192
 
 
 struct micro_globals {
@@ -37,8 +37,10 @@ void micro_tk(const micro_globals g) {
 
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
-    st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x32_s> (&As)[2][M_BLOCK] = al.allocate<st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x32_s>, 2, M_BLOCK>();
-    st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x32_s> (&Bs)[2][N_BLOCK] = al.allocate<st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x32_s>, 2, N_BLOCK>();
+    using ST_A = st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x16_s>;
+    using ST_B = st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x16_s>;
+    ST_A (&As)[2][M_BLOCK] = al.allocate<ST_A, 2, M_BLOCK>();
+    ST_B (&Bs)[2][N_BLOCK] = al.allocate<ST_B, 2, N_BLOCK>();
     rt_fl<BLOCK_SIZE, BLOCK_SIZE, col_l, rt_32x32_s> C_accum;
 
     /// Original WGID.
@@ -70,8 +72,8 @@ void micro_tk(const micro_globals g) {
     bool is_consumer = (warp_id >= NUM_PRODUCER_WORKERS && warp_group_id <= M_BLOCK);
     int consumer_idx = is_consumer ? warp_group_id : 0;
 
-    using T = typename st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x32_s>::dtype;
-    constexpr int bytes_per_thread = st_32x32_s::template bytes_per_thread<T>();
+    using T = typename st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x16_s>::dtype;
+    constexpr int bytes_per_thread = st_32x16_s::template bytes_per_thread<T>();
     constexpr int bytes_per_memcpy = bytes_per_thread * NUM_PRODUCER_THREADS;
     constexpr int memcpy_per_tile = BLOCK_SIZE * BLOCK_SIZE * sizeof(T) / bytes_per_memcpy;
     uint32_t swizzled_offsets_A[memcpy_per_tile];
@@ -82,7 +84,17 @@ void micro_tk(const micro_globals g) {
     const bool warp_leader = (threadIdx.x % kittens::WARP_THREADS) == 0;
 
     // Volatile LDS flags/counters
-    __shared__ __align__(16) unsigned int ready[2], done[2], prod_cnt[2];
+    __shared__ __align__(16) unsigned int ready[2], done[2], prod_cnt[2], init_done;
+
+    if (threadIdx.x == 0) {
+        ready[0] = 0; 
+        ready[1] = 0;
+        done[0]  = 0; 
+        done[1]  = 0; 
+        prod_cnt[0] = 0; 
+        prod_cnt[1] = 0;
+        init_done = 0;
+    }
 
     int tic = 0;
     int toc = 0;
@@ -94,9 +106,7 @@ void micro_tk(const micro_globals g) {
         for (int n=0; n<N_BLOCK; ++n) 
             G::load<2,false>(Bs[tic][n], g.b, {0, 0, col+n, 0}, swizzled_offsets_B);
         if (warp_leader) atomicAdd((int*)&prod_cnt[0], 1);  
-    }
-    if (is_consumer) {  
-        zero(C_accum); 
+        asm volatile("s_waitcnt vmcnt(0)");
     }
     if (is_consumer && consumer_idx == 0) {   
         #pragma unroll
@@ -106,8 +116,8 @@ void micro_tk(const micro_globals g) {
         for (int m=0; m<M_BLOCK; ++m) 
             G::load<2,false>(As[1][m], g.a, {0,0, row+m, 1}, swizzled_offsets_A);
         if (warp_leader) atomicAdd((int*)&prod_cnt[1], 1);
+        asm volatile("s_waitcnt vmcnt(0)");
     }
-    asm volatile("s_waitcnt vmcnt(1)");
     __syncthreads();
     if (threadIdx.x == 0) {
         while (prod_cnt[0] < NUM_PRODUCER_WORKERS) { __builtin_amdgcn_s_sleep(0); } 
@@ -119,14 +129,15 @@ void micro_tk(const micro_globals g) {
         done[1]  = 0; 
         prod_cnt[0] = 0; 
         prod_cnt[1] = 0;
+        init_done = 1;
     }
-    __syncthreads();
 
     int num_tiles = K / BLOCK_SIZE;
     constexpr int sleep_time = 0;
 
     if (is_producer) {
-        #pragma unroll
+        while (!init_done) { __builtin_amdgcn_s_sleep(0); } 
+        // #pragma unroll
         for (int tile = 2; tile < num_tiles; ++tile, toc^=1) {
         
             // Wait for consumers to finish with buffer
@@ -144,7 +155,7 @@ void micro_tk(const micro_globals g) {
                 G::load<2,false>(As[toc][m], g.a, {0,0, row+m, tile}, swizzled_offsets_A);
             
             if (warp_leader) atomicAdd((int*)&prod_cnt[toc], 1);
-            asm volatile("s_waitcnt vmcnt(1)");
+            asm volatile("s_waitcnt vmcnt(4)");
 
             const int target_2 = NUM_PRODUCER_WORKERS*(tile/2);
             while (prod_cnt[toc] < target_2) { 
@@ -158,6 +169,8 @@ void micro_tk(const micro_globals g) {
     }
 
     if (is_consumer) {
+        zero(C_accum);
+        while (!init_done) { __builtin_amdgcn_s_sleep(0); } 
         #pragma unroll
         for (int tile = 0; tile < num_tiles; ++tile, tic^=1) {
             unsigned int* ready_ptr = &ready[tic];
@@ -193,14 +206,7 @@ void micro_tk(const micro_globals g) {
 void dispatch_micro(micro_globals g) {
     const unsigned long mem_size = g.dynamic_shared_memory();
     hipFuncSetAttribute((void*)micro_tk, hipFuncAttributeMaxDynamicSharedMemorySize, mem_size);
-    hipEvent_t start, stop;
-    hipEventCreate(&start); hipEventCreate(&stop);
-    hipEventRecord(start);
     micro_tk<<<g.grid(), g.block(), mem_size>>>(g);
-    hipEventRecord(stop);
-    hipEventSynchronize(stop);
-    float ms=0.f; hipEventElapsedTime(&ms, start, stop);
-    hipEventDestroy(start); hipEventDestroy(stop);
     hipDeviceSynchronize();
 }
 

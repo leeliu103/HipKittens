@@ -20,8 +20,8 @@ using A_slice = rt_bf<BLOCK_SIZE, DOT_SLICE, row_l, rt_32x16_s>;
 using B_slice = rt_bf<BLOCK_SIZE, DOT_SLICE, row_l, rt_32x16_s>;
 
 #define M 192*40
-#define K 192*40
-#define N 192*40
+#define K 8192
+#define N 8192
 
 struct micro_globals {
     gl<bf16, -1, -1, -1, -1> a, b;
@@ -131,9 +131,7 @@ void micro_tk(const micro_globals g) {
             mma_ABt(C_accum, a0, b0, C_accum);
             __builtin_amdgcn_s_setprio(0);
         }
-        __builtin_amdgcn_s_setprio(1);
         asm volatile("s_waitcnt vmcnt(0)");
-        asm volatile("s_waitcnt lgkmcnt(0)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
 
