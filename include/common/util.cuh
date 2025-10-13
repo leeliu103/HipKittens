@@ -57,6 +57,17 @@ __device__ __forceinline__ int warpgroupid() { return threadIdx.x >> 8; }
  */
 __device__ __forceinline__ int laneid() { return threadIdx.x & 0x3f; }
 
+
+/**
+ * @brief Compute the ceiling division of two integers.
+ * @param a The dividend.
+ * @param b The divisor.
+ * @return The ceiling division result.
+ */
+__host__ __device__ inline int ceil_div(int a, int b) {
+    return (a + b - 1) / b;
+  }
+
 /**
    * @brief Transform a workgroup ID to a new workgroup ID based on the chunk size and number of XCDs.
    * @param workgroup_id The original workgroup ID.
