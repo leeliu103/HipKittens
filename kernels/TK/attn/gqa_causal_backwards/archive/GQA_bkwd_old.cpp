@@ -1,11 +1,11 @@
 #include "kittens.cuh"
 #include "pyutils/pyutils.cuh"
 
-constexpr int ATTN_B = 8; // batch size
+constexpr int ATTN_B = 16; // batch size
 constexpr int ATTN_H_Q = 16; // number of query heads
-constexpr int ATTN_H_KV = 8; // number of key/value heads (for GQA)
+constexpr int ATTN_H_KV = 16; // number of key/value heads (for GQA)
 constexpr int GROUP_SIZE = ATTN_H_Q / ATTN_H_KV; // queries per KV head group
-constexpr int ATTN_N = 2048; // sequence length
+constexpr int ATTN_N = 1024; // sequence length
 constexpr int ATTN_D = 128; // dimension
 constexpr int STEP_QO = 64; // block size for QO
 constexpr int BLOCK_SIZE_KV = 256; // block size for KV
@@ -111,7 +111,7 @@ void dispatch_dq_shuffle(attn_dq_shuffle_globals<D> g) {
 /*------------------------------------------------------------------------------------------------*/
 
 template<int D> struct attn_bwd_combined_globals { 
-    gl<bf16, -1, -1, -1, -1> Q, K, V, O;
+    gl<bf16, -1, -1, -1, -1> Q, K, V;
     gl<bf16, -1, -1, -1, -1> dOg, dQg, dKg, dVg;
     gl<float, -1, -1, -1, -1> L_vec, delta_vec;
     dim3 grid() { return dim3((ATTN_N / BLOCK_SIZE_KV), ATTN_H_KV, ATTN_B); }
@@ -899,7 +899,7 @@ void dispatch_bwd_combined(attn_bwd_combined_globals<D> g) {
     hipDeviceSynchronize();
 }
 
-PYBIND11_MODULE(tk_kernel_causal_bkwd, m) {
+PYBIND11_MODULE(tk_kernel_bkwd, m) {
     m.doc() = "tk_kernel_causal_bkwd python module";
 
     py::bind_function<dispatch_prep<ATTN_D>>(m, "dispatch_prep", 
@@ -912,7 +912,6 @@ PYBIND11_MODULE(tk_kernel_causal_bkwd, m) {
         &attn_bwd_combined_globals<ATTN_D>::Q, 
         &attn_bwd_combined_globals<ATTN_D>::K, 
         &attn_bwd_combined_globals<ATTN_D>::V, 
-        &attn_bwd_combined_globals<ATTN_D>::O, 
         &attn_bwd_combined_globals<ATTN_D>::dOg, 
         &attn_bwd_combined_globals<ATTN_D>::dQg,
         &attn_bwd_combined_globals<ATTN_D>::dKg,
