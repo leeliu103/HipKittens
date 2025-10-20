@@ -101,17 +101,25 @@ We picked the best of these options for each dimension:
 ./bin/tile_example_streamk_gemm_basic -prec=bf16 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1 
 
 # https://github.com/ROCm/composable_kernel/tree/develop/example/ck_tile/03_gemm
-./bin/tile_example_gemm_basic -prec=bf16 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1 
-./bin/tile_example_gemm_basic -prec=bf16 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_basic -prec=bf16 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_basic -prec=bf16 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_basic -prec=bf16 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1
+# *NOTE* We can run with `bf16` or `fp8` dtypes.
+./bin/tile_example_gemm_basic -prec=fp8 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1   
+./bin/tile_example_gemm_basic -prec=fp8 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_basic -prec=fp8 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_basic -prec=fp8 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_basic -prec=fp8 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1
 
-./bin/tile_example_gemm_universal -prec=bf16 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_universal -prec=bf16 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_universal -prec=bf16 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_universal -prec=bf16 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1
-./bin/tile_example_gemm_universal -prec=bf16 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=fp8 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=fp8 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=fp8 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=fp8 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=fp8 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1
+```
+
+**Low precision GEMM**
+The build is ```ninja example_gemm_mx_fp6```:
+```bash
+./bin/example_gemm_mx_fp6 0 2 1 0 1024 1024 1024 -1 -1 -1 1 500 100
+./bin/example_gemm_mx_fp6 0 2 1 0 4096 4096 4096 -1 -1 -1 1 500 100
 ```
 
 
@@ -158,5 +166,32 @@ hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r -
 hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r --d_type f32_r --rotating 512 --iters 100 --cold_iters 500 -m 16384 -n 16384 -k 16384
 ```
 
+FP6 GEMM:
+```bash
+git clone https://github.com/ROCm/rocm-libraries.git
+cd rocm-libraries/projects/hipBLASLt
+
+sudo apt-get install -y libboost-filesystem-dev libboost-system-dev
+
+# configure
+cmake -B build -S .                                  \
+      -D CMAKE_BUILD_TYPE=Release                    \
+      -D CMAKE_CXX_COMPILER=/opt/rocm/bin/amdclang++ \
+      -D CMAKE_C_COMPILER=/opt/rocm/bin/amdclang     \
+      -D CMAKE_PREFIX_PATH=/opt/rocm                 \         
+      -D GPU_TARGETS=gfx950
+# build
+cmake --build build --parallel
+
+./install.sh -c -a gfx950
+
+# Run
+cd build/release/
+./clients/hipblaslt-bench --api_method c -m 1024 -n 1024 -k 1024 --alpha 1 --beta 0 --transA T --transB N --batch_count 1 --scaleA 3 --scaleB 3 --a_type f6_r --b_type f6_r --c_type f16_r --d_type f16_r --compute_type f32_r --rotating 0 --cold_iters 500 --iters 100
+./clients/hipblaslt-bench --api_method c -m 2048 -n 2048 -k 2048 --alpha 1 --beta 0 --transA T --transB N --batch_count 1 --scaleA 3 --scaleB 3 --a_type f6_r --b_type f6_r --c_type f16_r --d_type f16_r --compute_type f32_r --rotating 0 --cold_iters 500 --iters 100
+./clients/hipblaslt-bench --api_method c -m 4096 -n 4096 -k 4096 --alpha 1 --beta 0 --transA T --transB N --batch_count 1 --scaleA 3 --scaleB 3 --a_type f6_r --b_type f6_r --c_type f16_r --d_type f16_r --compute_type f32_r --rotating 0 --cold_iters 500 --iters 100
+./clients/hipblaslt-bench --api_method c -m 8192 -n 8192 -k 8192 --alpha 1 --beta 0 --transA T --transB N --batch_count 1 --scaleA 3 --scaleB 3 --a_type f6_r --b_type f6_r --c_type f16_r --d_type f16_r --compute_type f32_r --rotating 0 --cold_iters 500 --iters 100
+./clients/hipblaslt-bench --api_method c -m 16384 -n 16384 -k 16384 --alpha 1 --beta 0 --transA T --transB N --batch_count 1 --scaleA 3 --scaleB 3 --a_type f6_r --b_type f6_r --c_type f16_r --d_type f16_r --compute_type f32_r --rotating 0 --cold_iters 500 --iters 1000
+```
 
 
