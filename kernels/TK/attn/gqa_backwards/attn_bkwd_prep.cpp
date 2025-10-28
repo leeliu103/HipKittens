@@ -221,6 +221,7 @@ void dispatch_dq_shuffle(attn_dq_shuffle_globals<D> g) {
     unsigned long mem_size = g.dynamic_shared_memory();
     hipFuncSetAttribute((void*)attend_dq_shuffle_ker<D>, hipFuncAttributeMaxDynamicSharedMemorySize, mem_size);
     attend_dq_shuffle_ker<D><<<g.grid(), g.block(), mem_size, g.stream>>>(g);
+    hipDeviceSynchronize();
 }
 
 PYBIND11_MODULE(tk_kernel_bkwd_prep, m) {
