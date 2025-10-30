@@ -20,7 +20,7 @@ torch.set_printoptions(
 
 # Inputs
 B = int(sys.argv[1]) if len(sys.argv) > 1 else 16
-D = 128
+D = int(sys.argv[7]) if len(sys.argv) > 7 else 128
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 64
 H_KV = int(sys.argv[4]) if len(sys.argv) > 4 else 8
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 1024

@@ -16,11 +16,11 @@ constexpr int ATTN_H_KV = 8; // number of heads for key and value
 constexpr int GROUP_SIZE = ATTN_H / ATTN_H_KV; // queries per KV head group
 
 #ifndef ATTN_N
-constexpr int ATTN_N = 8192; // sequence length
+constexpr int ATTN_N = 4096; // sequence length
 #endif
 
-#ifndef ATTN_D
-constexpr int ATTN_D = 128; // dimension
+#ifndef ATTN_D  
+constexpr int ATTN_D = 64; // dimension
 #endif
 
 constexpr int Q_BLOCK_SIZE = 32; // q block size
@@ -232,7 +232,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     load(k_reg, k_smem[0]);
     __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(2)");
+    asm volatile("s_waitcnt vmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
 
@@ -271,11 +271,12 @@ __global__ void attend_ker(const attn_globals<D> g) {
     // All warps then collaboratively load in the second slice of V (V1) into shared memory 
     G::load<1, false>(v_smem[1], g.Vg, {batch_idx, 1, head_idx_kv, 0}, swizzled_offsets_V);
     asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(4)");
+    asm volatile("s_waitcnt vmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
 
     // hot loop
+    #pragma unroll
     for (int j = 3; j < max_num_tiles - 1; j += 2) {
         // Cluster 0:
         //      QK1
@@ -300,7 +301,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         //      Load V0 into registers
         load(v_reg, v_smem[0]);
         asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(4)");
+        asm volatile("s_waitcnt vmcnt(2)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
@@ -331,7 +332,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         //      Load K2 into registers
         load(k_reg, k_smem[0]);
         asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(4)");
+        asm volatile("s_waitcnt vmcnt(2)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
@@ -367,7 +368,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
             }
         }
         asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(4)");
+        asm volatile("s_waitcnt vmcnt(2)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
@@ -398,7 +399,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         //      Load K3 into registers
         load(k_reg, k_smem[1]);
         asm volatile("s_waitcnt lgkmcnt(0)");
-        asm volatile("s_waitcnt vmcnt(4)");
+        asm volatile("s_waitcnt vmcnt(2)");
         __builtin_amdgcn_sched_barrier(0);
         __builtin_amdgcn_s_barrier();
         __builtin_amdgcn_sched_barrier(0);
@@ -435,7 +436,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         }
     }
     asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(4)");
+    asm volatile("s_waitcnt vmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);
@@ -466,7 +467,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     //      Load K4 into registers
     load(k_reg, k_smem[0]);
     asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(4)");
+    asm volatile("s_waitcnt vmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);
@@ -498,7 +499,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
         }
     }
     asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(2)");
+    asm volatile("s_waitcnt vmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);
@@ -528,7 +529,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     //      Load K5 into registers
     load(k_reg, k_smem[1]);
     asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(2)");
+    asm volatile("s_waitcnt vmcnt(0)");
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);

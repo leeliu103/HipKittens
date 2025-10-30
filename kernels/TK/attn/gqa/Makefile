@@ -2,13 +2,20 @@
 GPU_TARGET=CDNA4
 
 TARGET=tk_kernel
-SRC=tmp.cpp
 
 # parameters
 ATTN_B ?= 16
 ATTN_H ?= 64
 ATTN_H_KV ?= 8
-ATTN_N ?= 8192
+ATTN_N ?= 4096
+ATTN_D ?= 64
+
+# if attention d is 64 use kernel.cpp else use kernel_64.cpp
+ifeq ($(ATTN_D),64)
+SRC=kernel_d64.cpp
+else
+SRC=kernel.cpp
+endif
 
 CPPFLAGS += -DATTN_B=$(ATTN_B)
 CPPFLAGS += -DATTN_H=$(ATTN_H)

@@ -20,11 +20,11 @@ torch.set_printoptions(
 
 # Inputs
 B = int(sys.argv[1]) if len(sys.argv) > 1 else 16
-D = 128
+D = int(sys.argv[2]) if len(sys.argv) > 2 else 128
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 64
 H_KV = int(sys.argv[4]) if len(sys.argv) > 4 else 8
-N = int(sys.argv[2]) if len(sys.argv) > 2 else 1024
-causal = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+N = int(sys.argv[5]) if len(sys.argv) > 5 else 4096
+causal = int(sys.argv[6]) if len(sys.argv) > 6 else 0
 dtype = torch.bfloat16
 
 q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
@@ -140,5 +140,3 @@ l_diff, l_err_cnt, l_total, l_rel_error, l_l2_error, l_cos, l_mask = robustness_
 print(f"LSE: max_abs={l_diff.max().item():.6f}, max_rel={l_rel_error:.4f}, "
     f"rel_l2={l_l2_error:.4f}, cos={l_cos:.6f}, "
     f"errors={l_err_cnt}/{l_total} ({100*l_err_cnt/l_total:.4f}%)")
-
-    
