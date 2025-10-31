@@ -26,9 +26,6 @@ trainer:
   val_check_interval: ${eval:1000 * ${.accumulate_grad_batches}}
   max_steps: 20000
 
-expt_name: llama-1b-hk
-name: ${.expt_name}
-
 resume: true
 
 callbacks:
@@ -70,4 +67,6 @@ model:
     use_aiter_attn: false
     use_hip_attn: true
 
-    
+
+expt_name: llama-1b-hk-h=${model.config.n_head}-hkv=${model.config.n_head_kv}-n_embd=${model.config.n_embd}-n_layer=${model.config.n_layer}-seq=${model.config.n_positions}
+name: ${.expt_name}

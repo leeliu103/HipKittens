@@ -42,8 +42,9 @@ datamodule:
 model:
   config:
     n_embd: 2048
-    n_head: 64
-    n_head_kv: 8
+    head_dim: 128
+    n_head: 16
+    n_head_kv: 16
     n_layer: 6
     _target_: "transformers.GPT2Config"
     rms_norm: true
@@ -69,4 +70,5 @@ model:
     use_aiter_attn: true
     use_hip_attn: false
 
-    
+expt_name: llama-1b-aiter-h=${model.config.n_head}-hkv=${model.config.n_head_kv}-n_embd=${model.config.n_embd}-n_layer=${model.config.n_layer}-seq=${model.config.n_positions}
+name: ${.expt_name}
