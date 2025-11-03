@@ -16,7 +16,7 @@ constexpr int ATTN_H_KV = 8; // number of heads for key and value
 constexpr int GROUP_SIZE = ATTN_H / ATTN_H_KV; // queries per KV head group
 
 #ifndef ATTN_N
-constexpr int ATTN_N = 8192; // sequence length
+constexpr int ATTN_N = 1024; // sequence length
 #endif
 
 constexpr int ATTN_D = 128; // dimension
@@ -198,7 +198,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     __builtin_amdgcn_s_barrier();
 
     // hot loop
-    #pragma unroll
+    #pragma unroll 2
     for (int j = 3; j < num_tiles - 1; j += 2) {
         // Cluster 0:
         //      QK1
