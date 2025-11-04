@@ -157,26 +157,26 @@ test_result validate(T *d_i, T *d_o, const std::vector<float> &i_ref, std::vecto
     const int input_size  = i_ref.size();
     const int output_size = o_ref.size();
     // copy back
-    T2* o_t = new T2[output_size];
+    T* o_t = new T[output_size];
     float *o = new float[output_size];
     hipDeviceSynchronize();
     HipCheckError();
-    hipMemcpy(o_t, d_o, output_size * sizeof(T2), hipMemcpyDeviceToHost);
+    hipMemcpy(o_t, d_o, output_size * sizeof(T), hipMemcpyDeviceToHost);
     HipCheckError();
     for(int idx = 0; idx < output_size; idx++) {
-        if constexpr (std::is_same_v<T2, bf16>) {
+        if constexpr (std::is_same_v<T, bf16>) {
             o[idx] = __bfloat162float(o_t[idx]);
             o_ref[idx] = __bfloat162float(__float2bfloat16(o_ref[idx]));
         }
-        else if constexpr (std::is_same_v<T2, half>) {
+        else if constexpr (std::is_same_v<T, half>) {
             o[idx] = __half2float(o_t[idx]);
             o_ref[idx] = __half2float(__float2half(o_ref[idx]));
         }
-        else if constexpr(std::is_same_v<T2, float>) {
+        else if constexpr(std::is_same_v<T, float>) {
             o[idx] = o_t[idx];
             o_ref[idx] = o_ref[idx];
         }
-        else if constexpr (std::is_same_v<T2, fp8e4m3>) {
+        else if constexpr (std::is_same_v<T, fp8e4m3>) {
             o[idx] = float(o_t[idx]);
             o_ref[idx] = float(fp8e4m3(o_ref[idx]));
         }
@@ -193,9 +193,10 @@ test_result validate(T *d_i, T *d_o, const std::vector<float> &i_ref, std::vecto
     float first_ref_val = 0, first_out_val = 0;
     float max_ref_val = 0, max_out_val = 0;
     for(int i = 0; i < output_size; i++) {
-        if(abs(o_ref[i] - o[i]) > atol + rtol*abs(o_ref[i])) {
+        auto diff = abs(o_ref[i] - o[i]);
+        if(diff > atol + rtol*abs(o_ref[i])) {
             printf("o_ref[%d]: %f, o[%d]: %f\n", i, o_ref[i], i, o[i]);
-            printf("abs(o_ref[%d] - o[%d]): %f\n", i, i, abs(o_ref[i] - o[i]));
+            printf("abs(o_ref[%d] - o[%d]): %f\n", i, i, diff);
             good = false;
             if(first_mismatch_idx == -1) {
                 first_mismatch_idx = i;
