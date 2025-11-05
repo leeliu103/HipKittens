@@ -15,6 +15,11 @@ make clean && make
 
 CUTLASS:
 ```bash
+# obtain library
+git clone https://github.com/NVIDIA/cutlass.git
+cd cutlass 
+mkdir build && cd build
+
 cmake .. -DCUTLASS_NVCC_ARCHS=100a -DCUTLASS_UNITY_BUILD_ENABLED=OFF -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_EXAMPLES=OFF -DCUTLASS_LIBRARY_KERNELS=cutlass3x_sm100_tensorop_gemm_bf16_bf16_f32_void_bf16*tnt*
 make cutlass_profiler -j64
 
