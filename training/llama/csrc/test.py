@@ -25,8 +25,8 @@ torch.set_printoptions(
 # Inputs
 B = 8
 D = 128
-H = 64
-H_KV = 8
+H = 16
+H_KV = 16
 N = 2048
 causal = 1
 dtype = torch.bfloat16

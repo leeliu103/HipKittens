@@ -2,12 +2,14 @@
 
 using namespace kittens;
 
-template<int axis, int N, int M, ducks::rt::row_layout RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
+template<int axis, int N, int M, ducks::art::all RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
 __device__ inline static void atomic_pk_add_bf16_with_warpid(const GL &dst, const RT &src, const COORD &idx, int warpid) { 
     using T = base_types::packing<typename RT::dtype>::unpacked_type;
     using T2 = base_types::packing<typename RT::dtype>::packed_type;
     using U = typename GL::dtype;
     using U2 = base_types::packing<U>::packed_type;
+
+    static_assert(std::is_same_v<typename RT::layout, ducks::rt_layout::row>, "RT must be a row layout");
 
     static_assert(std::is_same_v<U, bf16>, "atomic_pk_add_bf16 is only supported for bf16");
     static_assert(std::is_same_v<T, float>, "atomic_pk_add_bf16 is only supported where T is float");
@@ -23,7 +25,7 @@ __device__ inline static void atomic_pk_add_bf16_with_warpid(const GL &dst, cons
 
     int lane_offset = laneid * 2 + warpid * 512;
 
-    using range_type = ducks::rt::get_nth_range_t<typename RT::register_ranges, N * RT::width + M>;
+    using range_type = ducks::art::get_nth_range_t<typename RT::register_ranges, N * RT::width + M>;
 
     static_assert(range_type::lo + 3 == range_type::hi, "buffer_atomic_pk_add_bf16 requires 4 consecutive registers");
     static_assert(range_type::hi < 256, "registers need to be VGPRS");
@@ -42,12 +44,14 @@ __device__ inline static void atomic_pk_add_bf16_with_warpid(const GL &dst, cons
     macros::buffer_atomic_pk_add_bf16<GPR_1_BF16>(br, byte_offset_1);
 }
 
-template<int axis, ducks::rt::row_layout RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
+template<int axis, ducks::art::all RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
 __device__ inline static void atomic_pk_add_bf16_with_warpid(const GL &dst, const RT &src, const COORD &idx, int warpid) { 
     using T = base_types::packing<typename RT::dtype>::unpacked_type;
     using T2 = base_types::packing<typename RT::dtype>::packed_type;
     using U = typename GL::dtype;
     using U2 = base_types::packing<U>::packed_type;
+
+    static_assert(std::is_same_v<typename RT::layout, ducks::rt_layout::row>, "RT must be a row layout");
 
     static_assert(std::is_same_v<U, bf16>, "atomic_pk_add_bf16 is only supported for bf16");
     static_assert(std::is_same_v<T, float>, "atomic_pk_add_bf16 is only supported where T is float");
@@ -64,7 +68,7 @@ __device__ inline static void atomic_pk_add_bf16_with_warpid(const GL &dst, cons
     int lane_offset = laneid * 2 + warpid * 512;
 
     auto perform_atomic_pk_add_bf16_with_warpid = [&]<int N, int M>() {
-        using range_type = ducks::rt::get_nth_range_t<typename RT::register_ranges, N * RT::width + M>;
+        using range_type = ducks::art::get_nth_range_t<typename RT::register_ranges, N * RT::width + M>;
 
         static_assert(range_type::lo + 3 == range_type::hi, "buffer_atomic_pk_add_bf16 requires 4 consecutive registers");
         static_assert(range_type::hi < 256, "registers need to be VGPRS");

@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
   - /experiment/pile/gpt3m-flash.yaml
-  - override /datamodule: slimpj6b
+  - override /datamodule: slim6B
 
 train: 
   optimizer:
@@ -33,6 +33,7 @@ callbacks:
     dirpath: ./${expt_name}
 
 datamodule:
+  name: slim6B
   batch_size: 8  # per gpu
   batch_size_eval: 8
 
