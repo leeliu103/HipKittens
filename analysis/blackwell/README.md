@@ -8,7 +8,7 @@ We compare to CUTLASS, Python, and CUBLAS/CUDNN.
 
 CuBLAS:
 ```bash
-cd AMD-benchmarking-harness/analysis/blackwell/bf16/
+cd HipKittens/analysis/blackwell/bf16/
 make clean && make
 ./matmul
 ```
@@ -39,7 +39,7 @@ make cutlass_profiler -j64
 
 CuBLAS:
 ```bash
-cd AMD-benchmarking-harness/analysis/blackwell/fp8/
+cd HipKittens/analysis/blackwell/fp8/
 make clean && make
 ./matmul
 ```

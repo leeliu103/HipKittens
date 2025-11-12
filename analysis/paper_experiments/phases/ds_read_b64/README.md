@@ -102,5 +102,5 @@ Conflicts detected at banks: [32, 33, 64, 65, ...]
 - PyTorch with CUDA support
 - pandas
 - rocprofv3 (for profiling)
-- ThunderKittens HIP library
+- HipKittens library
 

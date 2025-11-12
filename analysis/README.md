@@ -3,9 +3,8 @@
 
 Clone:
 ```bash
-git clone https://github.com/HazyResearch/AMD-benchmarking-harness/
-cd AMD-benchmarking-harness/ThunderKittens-HIP
-git checkout port/
+git clone https://github.com/HazyResearch/HipKittens/
+cd HipKittens
 source env.src
 ```
 
@@ -33,39 +32,35 @@ Run benchmarking:
 
 BF16 GEMM benchmarking:
 ```bash
-cd https://github.com/HazyResearch/AMD-benchmarking-harness/tree/main/analysis/bf16_gemm/mi350x
+cd https://github.com/HazyResearch/HipKittens/tree/main/analysis/bf16_gemm/mi350x
 bash mi355x_benchmark.sh
 ```
 
 Rotary benchmarking:
 ```bash
-cd https://github.com/HazyResearch/AMD-benchmarking-harness/tree/main/analysis/rotary/mi350x
+cd https://github.com/HazyResearch/HipKittens/tree/main/analysis/rotary/mi350x
 bash mi355x_benchmark.sh
 ```
 
 Layernorm benchmarking:
 ```bash
-cd https://github.com/HazyResearch/AMD-benchmarking-harness/tree/main/analysis/layernorm/mi350x
+cd https://github.com/HazyResearch/HipKittens/tree/main/analysis/layernorm/mi350x
 bash mi355x_benchmark.sh
 ```
 
 Attention forwards benchmarking:
 ```bash
-cd https://github.com/HazyResearch/AMD-benchmarking-harness/tree/main/analysis/attn/fwd/mi350x
+cd https://github.com/HazyResearch/HipKittens/tree/main/analysis/attn/fwd/mi350x
 bash mi355x_benchmark.sh
 ```
 
 FP8 GEMM:
 ```bash
 # First switch ThunderKittens branches
-cd AMD-benchmarking-harness/ThunderKittens-HIP/
-git checkout drew/fp8-4-warps-16x16x128/
-source env.src
-cd ThunderKittens-HIP/kernels/matmul/FP8_4wave/
-
+cd cd https://github.com/HazyResearch/HipKittens/tree/main/kernels/gemm/fp8fp32/FP8_4wave
 # Set the M, N, K in the matmul.cu file
 make clean && make
-./matmul
+./tk_kernel
 ```
 
 
@@ -86,7 +81,7 @@ We compare to:
 - HIPBLASLT
 - Triton
 
-To see how we produced the baseline method results, please use the files in [analysis/baselines/](https://github.com/HazyResearch/AMD-benchmarking-harness/tree/main/analysis/baselines).
+To see how we produced the baseline method results, please use the files in [analysis/baselines/](https://github.com/HazyResearch/HipKittens/tree/main/analysis/baselines).
 
 
 

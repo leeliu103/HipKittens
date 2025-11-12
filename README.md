@@ -9,6 +9,8 @@ HipKittens is a repository in the ThunderKittens cinematic universe! This work p
 
 <br>
 
+**Links**: [Paper (arXiv)](https://arxiv.org/abs/2511.08083) | [Blog: Fast and Furious AMD Kernels](https://hazyresearch.stanford.edu/blog/2025-11-09-hk) | [Blog: AMD GPUs go brrr](https://hazyresearch.stanford.edu/blog/2025-11-09-amd-brr)
+
 **AI has largely used a single hardware vendor in the past, but how can we enable a *multi-silicon* future?** Towards the dream of a single software framework that translates across hardware platforms, we explore whether the primitives used in prior DSLs (like TK) suffice for AMD, or whether we need entirely new primitives.
 
 We find that core tile and bulk compute interfaces carry over from TK to HK, but decisions around memory access patterns, scheduling compute and memory, and ordering thread blocks within the chiplet architecture differ. HipKittens features the following types of primitives. 
@@ -18,8 +20,6 @@ We find that core tile and bulk compute interfaces carry over from TK to HK, but
 4. **Scheduling and overlapping**: we show two core patterns for overlapping compute and memory, 8-wave ping pong and 4-wave interelave, that appear across kernels.
 
 We support CDNA3 and CDNA 4. 
-
-
 
 ## Setup
 

@@ -28,12 +28,6 @@ Mi355x:
 
 
 ### Baselines
-
-Benchmark using:
-```bash
-./benchmark.sh
-```
-
 You can view the benchmarking protocol in ```test_python.py```.
 
 We consider the following baselines:
