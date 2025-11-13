@@ -114,13 +114,16 @@ if profiling:
     print(f"Max error: {max_error}")
     print(f"Mean error: {mean_error}")
     print(f"Max value of C_ref: {C_ref_float.max()}")
-    print(f"Number of large errors (>0.1): {error_count}\n")
+    print(f"Number of large errors (>0.01): {error_count}\n")
 
     print("diff[:32, :32].max()", diff[:32, :32].max())
     print("diff[:32, 32:64].max()", diff[:32, 32:64].max())
     print("diff[32:64, :32].max()", diff[32:64, :32].max())
     print("diff[32:64, 32:64].max()", diff[32:64, 32:64].max())
     print()
+
+    print(C_float[:4, :4])
+    print(C_ref_float[:4, :4])
 
 
 
