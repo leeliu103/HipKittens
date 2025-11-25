@@ -238,7 +238,7 @@ __device__ inline void load_global_to_shared_direct(
 
     uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
     int thread_id = threadIdx.x % N_THREADS;
-    int warp_id = thread_id >> 6;
+    int warp_id = thread_id >> kittens::WARP_LOG2;
     
     const T* lds_base = &dst.data[0] + (kittens::warpid() * elem_per_warp);
 
@@ -291,7 +291,7 @@ __device__ inline void prefill_swizzled_offsets_old(
 
     uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
     int thread_id = threadIdx.x % N_THREADS;
-    int warp_id = thread_id >> 6;
+    int warp_id = thread_id >> kittens::WARP_LOG2;
 
     #pragma unroll
     for (int i = 0; i < memcpy_per_tile; i++) {
@@ -330,7 +330,7 @@ __device__ inline void load_global_to_shared_direct_with_swizzled_offsets(
     i32x4 srsrc = make_srsrc(global_ptr, row_stride * ST::rows * sizeof(T));
 
     const int thread_id = threadIdx.x % N_THREADS;
-    const int warp_id = thread_id >> 6;
+    const int warp_id = thread_id >> kittens::WARP_LOG2;
 
     #pragma unroll
     for (int i = 0; i < memcpy_per_tile; i++) {

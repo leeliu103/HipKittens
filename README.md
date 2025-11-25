@@ -149,6 +149,16 @@ Under [HipKittens/training](https://github.com/HazyResearch/HipKittens/tree/main
 
 We provide resources for profiling kernels, dockers, and HipKittens in [HipKittens/docs](https://github.com/HazyResearch/HipKittens/tree/main/docs). Contribute to our [onboarding documents](https://docs.google.com/document/d/15-Zvf6e0NLX1si4ml4sUOWCDlXNMtOWKiuo6CKZMEYA/edit?usp=sharing).
 
+## Wavefront size configuration
+
+HipKittens kernels are written around a logical warp size that must match the hardware's native wavefront. CDNA parts execute in wave64, while RDNA (gfx10/gfx11/gfx12) devices run in wave32 by default.  
+
+- All code is parameterized by the macro `KITTENS_WARP_THREADS` (valid values: `32` or `64`).  
+- Our sample Makefiles (e.g., `examples/add`) detect `OFFLOAD_ARCHS` and automatically define the correct value for you.  
+- If you integrate HipKittens into another build system, make sure to pass `-DKITTENS_WARP_THREADS=$(hipDeviceProp.warpSize)` when compiling both host and device code. Mixed-architecture fat binaries should be split so each build targets a single wave size.  
+
+Failing to match the device wavefront will now trigger a runtime error pointing to the correct rebuild command.
+
 ### Get in touch!
 
 Contact: William Hu [willhu@stanford.edu](willhu@stanford.edu) and Simran Arora [simran@cs.stanford.edu](simran@cs.stanford.edu).

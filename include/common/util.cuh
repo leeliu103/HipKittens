@@ -25,18 +25,22 @@
  */
 namespace kittens {
 
+#ifndef KITTENS_WARP_THREADS
+#define KITTENS_WARP_THREADS 64
+#endif
+static_assert(KITTENS_WARP_THREADS == 32 || KITTENS_WARP_THREADS == 64,
+              "KITTENS_WARP_THREADS must be either 32 or 64.");
+
+constexpr int WARP_THREADS{KITTENS_WARP_THREADS};
+constexpr int WARP_LOG2 = (WARP_THREADS == 64 ? 6 : 5);
+constexpr int WARP_LANE_MASK = WARP_THREADS - 1;
+
 /* ----------  GENERAL CONSTANTS FOR KITTENS  ---------- */
 /**
- * @brief Constant representing number of threads in a warp.
- */
-constexpr int WARP_THREADS{64};
-
-/**
-
  * @brief Get the warp ID of the current thread.
  * @return The warp ID.
  */
-__device__ __forceinline__ int warpid() { return threadIdx.x >> 6; } 
+__device__ __forceinline__ int warpid() { return threadIdx.x >> WARP_LOG2; } 
 
 /**
  * @brief Get the number of warps in the threadblock.
@@ -48,7 +52,7 @@ __device__ __forceinline__ int warpid() { return threadIdx.x >> 6; }
  * @brief Get the lane ID of the current thread within its warp.
  * @return The lane ID.
  */
-__device__ __forceinline__ int laneid() { return threadIdx.x & 0x3f; }
+__device__ __forceinline__ int laneid() { return threadIdx.x & WARP_LANE_MASK; }
 
 using i32x4 = int32_t __attribute__((ext_vector_type(4)));
 struct buffer_resource {
@@ -136,7 +140,8 @@ struct default_type {};
 /**
  * @brief Mask constant for all active threads in a warp.
  */
-static constexpr uint64_t MASK_ALL = 0xFFFFFFFFFFFFFFFF;
+static constexpr uint64_t MASK_ALL =
+    (WARP_THREADS == 64) ? 0xFFFFFFFFFFFFFFFFull : ((1ull << WARP_THREADS) - 1ull);
 
 /**
  * @brief Perform a shuffle down operation on a packed type synchronously across a warp.
@@ -163,21 +168,21 @@ __device__ static inline T packed_shfl_down(uint64_t mask, const T &f, int delta
                                        *reinterpret_cast<const __hip_bfloat16*>(&f)};
         }
 
-        u.ui = __shfl_down_sync<unsigned long long, unsigned int>(mask, u.ui, delta, 64);
+        u.ui = __shfl_down_sync<unsigned long long, unsigned int>(mask, u.ui, delta, WARP_THREADS);
         if constexpr (std::is_same_v<T, bf16>) {
             return *reinterpret_cast<const T*>(&u.bf162.x);  // Extract single bf16 from the .x component
         } else {
             return u.bf162;  // Return full bf162 for bf16_2 case
         }
     } else {
-        return __shfl_down(f, delta);
+        return __shfl_down_sync(mask, f, delta, WARP_THREADS);
     }
 }
 template<>
 __device__ inline float2 packed_shfl_down<float2>(uint64_t mask, const float2 &f, int delta) {
     float2 r;
-    r.x = __shfl_down(f.x, delta);
-    r.y = __shfl_down(f.y, delta);
+    r.x = __shfl_down_sync(mask, f.x, delta, WARP_THREADS);
+    r.y = __shfl_down_sync(mask, f.y, delta, WARP_THREADS);
     return r;
 }
 /**
@@ -190,37 +195,37 @@ __device__ inline float2 packed_shfl_down<float2>(uint64_t mask, const float2 &f
  */
 template<typename T>
 __device__ static inline T packed_shfl(uint64_t mask, const T &f, int src) {
-    return __shfl(f, src);
+    return __shfl_sync(mask, f, src, WARP_THREADS);
 }
 template<>
 __device__ inline bf16 packed_shfl(uint64_t mask, const bf16 &f, int src) {
-    float r = __shfl(base_types::convertor<float, bf16>::convert(f), src);
+    float r = __shfl_sync(mask, base_types::convertor<float, bf16>::convert(f), src, WARP_THREADS);
     return base_types::convertor<bf16, float>::convert(r);
 }
 template<>
 __device__ inline bf16_2 packed_shfl(uint64_t mask, const bf16_2 &f, int src) {
     float2 r;
-    r.x = __shfl(base_types::convertor<float, bf16>::convert(f.x), src);
-    r.y = __shfl(base_types::convertor<float, bf16>::convert(f.y), src);
+    r.x = __shfl_sync(mask, base_types::convertor<float, bf16>::convert(f.x), src, WARP_THREADS);
+    r.y = __shfl_sync(mask, base_types::convertor<float, bf16>::convert(f.y), src, WARP_THREADS);
     return base_types::convertor<bf16_2, float2>::convert(r);
 }
 template<>
 __device__ inline half packed_shfl(uint64_t mask, const half &f, int src) {
-    float r = __shfl(base_types::convertor<float, half>::convert(f), src);
+    float r = __shfl_sync(mask, base_types::convertor<float, half>::convert(f), src, WARP_THREADS);
     return base_types::convertor<half, float>::convert(r);
 }
 template<>
 __device__ inline half_2 packed_shfl(uint64_t mask, const half_2 &f, int src) {
     float2 r;
-    r.x = __shfl(base_types::convertor<float, half>::convert(f.x), src);
-    r.y = __shfl(base_types::convertor<float, half>::convert(f.y), src);
+    r.x = __shfl_sync(mask, base_types::convertor<float, half>::convert(f.x), src, WARP_THREADS);
+    r.y = __shfl_sync(mask, base_types::convertor<float, half>::convert(f.y), src, WARP_THREADS);
     return base_types::convertor<half_2, float2>::convert(r);
 }
 template<>
 __device__ inline float2 packed_shfl<float2>(uint64_t mask, const float2 &f, int src) {
     float2 r;
-    r.x = __shfl(f.x, src);
-    r.y = __shfl(f.y, src);
+    r.x = __shfl_sync(mask, f.x, src, WARP_THREADS);
+    r.y = __shfl_sync(mask, f.y, src, WARP_THREADS);
     return r;
 }
 
