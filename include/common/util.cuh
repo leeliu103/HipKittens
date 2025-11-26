@@ -104,8 +104,13 @@ __host__ __device__ inline int ceil_div(int a, int b) {
     return chunk_idx * block + xcd * chunk_size + pos_in_chunk;
 }
 
-
-constexpr int MAX_SHARED_MEMORY = 160000;
+// RDNA4 (gfx12xx) has 128KB LDS per WGP
+// CDNA/MI300 has 160KB+ shared memory limit
+#if defined(KITTENS_RDNA4)
+constexpr int MAX_SHARED_MEMORY = 131072; // 128KB for RDNA4 WGP
+#else
+constexpr int MAX_SHARED_MEMORY = 160000; // 160KB for CDNA
+#endif
 constexpr int NUM_XCDS = 8;
 constexpr int CUS_PER_XCD = 32;
 constexpr int NUM_CUS = CUS_PER_XCD * NUM_XCDS;
