@@ -105,8 +105,8 @@ void micro_tk(const micro_globals g) {
     int tic = 0;
     int toc = 1;
 
-    using T = typename st_bf<BLOCK_SIZE, K_STEP, st_32x16_s>::dtype;
-    constexpr int bytes_per_thread = st_32x16_s::template bytes_per_thread<T>();
+    using T = typename ST_A::dtype;
+    constexpr int bytes_per_thread = ST_A::underlying_subtile_bytes_per_thread;
     constexpr int bytes_per_memcpy = bytes_per_thread * NUM_THREADS;
     constexpr int memcpy_per_tile = BLOCK_SIZE * K_STEP * sizeof(T) / bytes_per_memcpy;
     uint32_t swizzled_offsets_A[memcpy_per_tile/2];
