@@ -177,6 +177,7 @@ __device__ __forceinline__ void ds_read_b128(const uint32_t smem_ptr, const int 
   }
 }
 
+#if KITTENS_HAS_LDS_TRANSPOSE_READS
 template<int GPR_START>
 __device__ __forceinline__ void ds_read_b64_tr_b16(const uint32_t smem_ptr, const int offset) {
   constexpr int GPR_END = GPR_START + 1;
@@ -193,6 +194,13 @@ __device__ __forceinline__ void ds_read_b64_tr_b16(const uint32_t smem_ptr, cons
       : "memory");
   }
 }
+#else
+template<int GPR_START>
+__device__ __forceinline__ void ds_read_b64_tr_b16(const uint32_t, const int) {
+  static_assert(GPR_START < 0,
+    "ds_read_b64_tr_b16 is unavailable without LDS transpose read support");
+}
+#endif
 
 template<int GPR_START>
 __device__ __forceinline__ void ds_write_b64(const uint32_t smem_ptr, const int offset) {

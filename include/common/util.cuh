@@ -12,6 +12,22 @@
 
 #include <hip/hip_runtime.h>
 
+#ifndef KITTENS_HAS_RAW_BUFFER_LOAD_LDS
+#if defined(KITTENS_RDNA4)
+#define KITTENS_HAS_RAW_BUFFER_LOAD_LDS 0
+#else
+#define KITTENS_HAS_RAW_BUFFER_LOAD_LDS 1
+#endif
+#endif
+
+#ifndef KITTENS_HAS_LDS_TRANSPOSE_READS
+#if defined(KITTENS_RDNA4)
+#define KITTENS_HAS_LDS_TRANSPOSE_READS 0
+#else
+#define KITTENS_HAS_LDS_TRANSPOSE_READS 1
+#endif
+#endif
+
 #include "base_types.cuh"
 
 #ifndef __forceinline__
@@ -24,6 +40,9 @@
  * @brief The main namespace of ThunderKittens.
  */
 namespace kittens {
+
+inline constexpr bool supports_raw_buffer_load_lds = static_cast<bool>(KITTENS_HAS_RAW_BUFFER_LOAD_LDS);
+inline constexpr bool supports_lds_transpose_reads = static_cast<bool>(KITTENS_HAS_LDS_TRANSPOSE_READS);
 
 #ifndef KITTENS_WARP_THREADS
 #define KITTENS_WARP_THREADS 64

@@ -36,7 +36,10 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
     U *src_ptr = (U*)&src[(idx.template unit_coord<-1, 3>())];
     i32x4 srsrc = make_srsrc(src_ptr, SV::length * sizeof(T));
 
-    const T* lds_base = &dst.data[0] + (warpid * elem_per_warp);
+    T* lds_base = &dst.data[0] + (warpid * elem_per_warp);
+#if !KITTENS_HAS_RAW_BUFFER_LOAD_LDS
+    const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(src_ptr);
+#endif
 
     if constexpr (num_memcpys > 0) {
         #pragma unroll
@@ -44,19 +47,24 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
             const int warp_offset = warpid + i * num_warps;
             const int lane_byte_offset = warp_offset * bytes_per_warp + laneid * bytes_per_thread;
 
-            const T* lds_elem_ptr = lds_base + (i * num_warps * elem_per_warp);
+            T* lds_elem_ptr = lds_base + (i * num_warps * elem_per_warp);
+            if constexpr (supports_raw_buffer_load_lds) {
+                uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
+                as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
 
-            uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
-            as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
-
-            llvm_amdgcn_raw_buffer_load_lds(
-                srsrc,
-                lds_ptr,
-                bytes_per_thread,
-                lane_byte_offset,
-                0,
-                0,
-                static_cast<int>(coherency::cache_all));
+                llvm_amdgcn_raw_buffer_load_lds(
+                    srsrc,
+                    lds_ptr,
+                    bytes_per_thread,
+                    lane_byte_offset,
+                    0,
+                    0,
+                    static_cast<int>(coherency::cache_all));
+            } else {
+                uint8_t* shared_lane_ptr = reinterpret_cast<uint8_t*>(lds_elem_ptr) + laneid * bytes_per_thread;
+                const uint8_t* global_lane_ptr = global_bytes + lane_byte_offset;
+                __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+            }
         }
     }
 
@@ -69,18 +77,24 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
             const int warp_offset = warpid + num_memcpys * num_warps;
             const int lane_byte_offset = warp_offset * bytes_per_warp + laneid * bytes_per_thread;
 
-            const T* lds_elem_ptr = lds_base + (num_memcpys * num_warps * elem_per_warp);
-            uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
-            as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
+            T* lds_elem_ptr = lds_base + (num_memcpys * num_warps * elem_per_warp);
+            if constexpr (supports_raw_buffer_load_lds) {
+                uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
+                as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
 
-            llvm_amdgcn_raw_buffer_load_lds(
-                srsrc,
-                lds_ptr,
-                bytes_per_thread,
-                lane_byte_offset,
-                0,
-                0,
-                static_cast<int>(coherency::cache_all));
+                llvm_amdgcn_raw_buffer_load_lds(
+                    srsrc,
+                    lds_ptr,
+                    bytes_per_thread,
+                    lane_byte_offset,
+                    0,
+                    0,
+                    static_cast<int>(coherency::cache_all));
+            } else {
+                uint8_t* shared_lane_ptr = reinterpret_cast<uint8_t*>(lds_elem_ptr) + laneid * bytes_per_thread;
+                const uint8_t* global_lane_ptr = global_bytes + lane_byte_offset;
+                __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+            }
         }
     }
 }

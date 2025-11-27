@@ -146,6 +146,7 @@
             static_assert(false, "Unsupported shape");
         }
     } else {
+#if KITTENS_HAS_LDS_TRANSPOSE_READS
         static_assert(RT::rows == ST::rows, "register tile and shared tile must match rows");
         static_assert(RT::cols == ST::cols,  "register tile and shared tile must match cols");
     
@@ -190,6 +191,10 @@
         } else {
             static_assert(false, "Unsupported shape");
         }
+#else
+        static_assert(!ducks::art::col_layout<RT>,
+            "Assembly column-layout loads require LDS transpose reads.");
+#endif
     }
  }
  
@@ -276,6 +281,7 @@
             static_assert(false, "Unsupported shape");
         }
     } else {
+#if KITTENS_HAS_LDS_TRANSPOSE_READS
         static_assert(RT::rows == ST::rows, "register tile and shared tile must match rows");
         static_assert(RT::cols == ST::cols,  "register tile and shared tile must match cols");
     
@@ -382,6 +388,10 @@
         } else {
             static_assert(false, "Unsupported shape");
         }
+#else
+        static_assert(!ducks::art::col_layout<RT>,
+            "Assembly column-layout loads require LDS transpose reads.");
+#endif
     }
  }
  
