@@ -18,6 +18,14 @@
 #include <string>
 #include <bit>
 
+#ifndef KITTENS_HAS_V_CVT_PK_BF16_F32
+#if defined(KITTENS_RDNA4)
+#define KITTENS_HAS_V_CVT_PK_BF16_F32 0
+#else
+#define KITTENS_HAS_V_CVT_PK_BF16_F32 1
+#endif
+#endif
+
 
 namespace kittens {
 
@@ -268,6 +276,25 @@ template<typename T, typename U> struct convertor {
         return (T)u;
     }
 };
+
+namespace detail {
+/**
+ * @brief Software fallback for packing two floats into a bf16_2.
+ *
+ * Used on architectures that lack v_cvt_pk_bf16_f32.
+ */
+__host__ __device__ inline bf16_2 pack_bf16_pair_soft(float lo, float hi) {
+    const uint32_t lo_bits = std::bit_cast<uint32_t>(lo) >> 16;
+    const uint32_t hi_bits = std::bit_cast<uint32_t>(hi) & 0xffff0000u;
+    union {
+        uint32_t u32;
+        bf16_2   bf;
+    } converter{};
+    converter.u32 = lo_bits | hi_bits;
+    return converter.bf;
+}
+} // namespace detail
+
 template<> struct convertor<float, bf16> {
     static __host__ __device__ inline float convert(const bf16 & u) {
         return 	__bfloat162float(u);
@@ -296,11 +323,15 @@ template<> struct convertor<float2, bf16_2> {
 
 template<> struct convertor<bf16_2, float2> {
     static __host__ __device__ inline bf16_2 convert(const float2 &u) {
+#if defined(__HIP_DEVICE_COMPILE__) && KITTENS_HAS_V_CVT_PK_BF16_F32
         uint32_t result;
-        asm volatile("v_cvt_pk_bf16_f32 %0, %1, %2" 
-                     : "=v"(result) 
+        asm volatile("v_cvt_pk_bf16_f32 %0, %1, %2"
+                     : "=v"(result)
                      : "v"(u.x), "v"(u.y));
         return *reinterpret_cast<bf16_2*>(&result);
+#else
+        return detail::pack_bf16_pair_soft(u.x, u.y);
+#endif
     }
 };
 
@@ -337,7 +368,7 @@ template<> struct convertor<half, bf16> {
 };
 template<> struct convertor<bf16_2, half_2> {
     static __host__ __device__ inline bf16_2 convert(const half_2 & u) {
-        return __float22bfloat162_rn(__half22float2(u));
+        return convertor<bf16_2, float2>::convert(__half22float2(u));
     }
 };
 template<> struct convertor<half_2, bf16_2> {

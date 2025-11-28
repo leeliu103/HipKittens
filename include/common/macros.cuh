@@ -571,6 +571,7 @@ __device__ __forceinline__ void v_subrev_f32_dpp() {
   }
 }
 
+#if KITTENS_HAS_V_CVT_PK_BF16_F32
 template<int DST_GPR, int SRC_GPR_0, int SRC_GPR_1>
 __device__ __forceinline__ void v_cvt_pk_bf16_f32() {
   if constexpr (DST_GPR < 256 && SRC_GPR_0 < 256 && SRC_GPR_1 < 256) {
@@ -581,6 +582,20 @@ __device__ __forceinline__ void v_cvt_pk_bf16_f32() {
     static_assert(false, "Invalid operand for instruction: v_cvt_pk_bf16_f32");
   }
 }
+#else
+template<int DST_GPR, int SRC_GPR_0, int SRC_GPR_1>
+__device__ __forceinline__ void v_cvt_pk_bf16_f32() {
+  if constexpr (DST_GPR < 256 && SRC_GPR_0 < 256 && SRC_GPR_1 < 256) {
+    asm volatile(
+      "v_lshrrev_b32 v[%0], 16, v[%1]\n"
+      "v_bfi_b32 v[%0], v[%2], v[%0], 0xffff0000"
+      :
+      : "n"(DST_GPR), "n"(SRC_GPR_0), "n"(SRC_GPR_1));
+  } else {
+    static_assert(false, "Invalid operand for instruction: v_cvt_pk_bf16_f32");
+  }
+}
+#endif
 
 template<int GPR0, int GPR1>
 __device__ __forceinline__ void v_permlane16_swap_b32_e32() {
