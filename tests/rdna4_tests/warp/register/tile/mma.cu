@@ -19,8 +19,13 @@ struct test_mma_AB {
     }
     template<typename RT_SHAPE_ACCUM, int K_DIM, int H, int W, int NW, gl_t GTL_A, gl_t GTL_B, gl_t GTL_C, typename _K> __device__ static void device_func(const GTL_A &a_input, const GTL_B &b_input, const GTL_C &c_output) {
         constexpr int K = _K::value;
+#if defined(KITTENS_RDNA4)
+        using A_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+        using B_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+#else
         using A_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_32x16, kittens::ducks::rt_shape::rt_16x32>;
         using B_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_16x32, kittens::ducks::rt_shape::rt_32x16>;
+#endif
 
         kittens::rt_bf<RT_SHAPE_ACCUM::rows*H, K_DIM*K, kittens::ducks::rt_layout::row, A_SHAPE> a;
         kittens::rt_bf<K_DIM*K, RT_SHAPE_ACCUM::cols*W, kittens::ducks::rt_layout::col, B_SHAPE> b;
@@ -55,8 +60,13 @@ struct test_mma_ABt {
     }
     template<typename RT_SHAPE_ACCUM, int K_DIM, int H, int W, int NW, gl_t GTL_A, gl_t GTL_B, gl_t GTL_C, typename _K> __device__ static void device_func(const GTL_A &a_input, const GTL_B &b_input, const GTL_C &c_output) {
         constexpr int K = _K::value;
+#if defined(KITTENS_RDNA4)
+        using A_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+        using B_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+#else
         using A_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_32x16, kittens::ducks::rt_shape::rt_16x32>;
         using B_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_32x16, kittens::ducks::rt_shape::rt_16x32>;
+#endif
 
         kittens::rt_bf<RT_SHAPE_ACCUM::rows*H, K_DIM*K, kittens::ducks::rt_layout::row, A_SHAPE> a;
         kittens::rt_bf<RT_SHAPE_ACCUM::cols*W, K_DIM*K, kittens::ducks::rt_layout::row, B_SHAPE> b;
@@ -90,8 +100,13 @@ struct test_mma_AtB {
     }
     template<typename RT_SHAPE_ACCUM, int K_DIM, int H, int W, int NW, gl_t GTL_A, gl_t GTL_B, gl_t GTL_C, typename _K> __device__ static void device_func(const GTL_A &a_input, const GTL_B &b_input, const GTL_C &c_output) {
         constexpr int K = _K::value;
+#if defined(KITTENS_RDNA4)
+        using A_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+        using B_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+#else
         using A_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_16x32, kittens::ducks::rt_shape::rt_32x16>;
         using B_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_16x32, kittens::ducks::rt_shape::rt_32x16>;
+#endif
 
         kittens::rt_bf<K_DIM*K, RT_SHAPE_ACCUM::rows*H, kittens::ducks::rt_layout::col, A_SHAPE> a;
         kittens::rt_bf<K_DIM*K, RT_SHAPE_ACCUM::cols*W, kittens::ducks::rt_layout::col, B_SHAPE> b;
@@ -125,8 +140,13 @@ struct test_mma_AtBt {
     }
     template<typename RT_SHAPE_ACCUM, int K_DIM, int H, int W, int NW, gl_t GTL_A, gl_t GTL_B, gl_t GTL_C, typename _K> __device__ static void device_func(const GTL_A &a_input, const GTL_B &b_input, const GTL_C &c_output) {
         constexpr int K = _K::value;
+#if defined(KITTENS_RDNA4)
+        using A_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+        using B_SHAPE = kittens::ducks::rt_shape::rt_16x16;
+#else
         using A_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_16x32, kittens::ducks::rt_shape::rt_32x16>;
         using B_SHAPE = std::conditional_t<std::is_same_v<RT_SHAPE_ACCUM, kittens::ducks::rt_shape::rt_32x32>, kittens::ducks::rt_shape::rt_32x16, kittens::ducks::rt_shape::rt_16x32>;
+#endif
 
         kittens::rt_bf<K_DIM*K, RT_SHAPE_ACCUM::rows*H, kittens::ducks::rt_layout::col, A_SHAPE> a;
         kittens::rt_bf<RT_SHAPE_ACCUM::cols*W, K_DIM*K, kittens::ducks::rt_layout::row, B_SHAPE> b;
@@ -172,13 +192,17 @@ struct mma_wrapper_2d {
             GTL_A a_input (d_i,           nullptr, nullptr, nullptr, nullptr);
             GTL_B b_input (d_i + H*K*MN_DIM*K_DIM, nullptr, nullptr, nullptr, nullptr);
             GTL_C c_output(d_o,           nullptr, nullptr, nullptr, nullptr);
+            size_t shmem_bytes = kittens::MAX_SHARED_MEMORY;
+#if defined(KITTENS_RDNA4)
+            shmem_bytes = 0;
+#endif
             // run kernel
             hipFuncSetAttribute(
                 reinterpret_cast<void *>(mma_global_wrapper_2d<test, kittens::bf16, RT_SHAPE_ACCUM, K_DIM, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...>),
                 hipFuncAttributeMaxDynamicSharedMemorySize,
-                kittens::MAX_SHARED_MEMORY
+                shmem_bytes
             );
-            mma_global_wrapper_2d<test, kittens::bf16, RT_SHAPE_ACCUM, K_DIM, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...><<<1, NUM_WORKERS*kittens::WARP_THREADS, kittens::MAX_SHARED_MEMORY>>>(a_input, b_input, c_output);
+            mma_global_wrapper_2d<test, kittens::bf16, RT_SHAPE_ACCUM, K_DIM, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...><<<1, NUM_WORKERS*kittens::WARP_THREADS, shmem_bytes>>>(a_input, b_input, c_output);
             // fill in correct results on cpu
             test::template host_func<RT_SHAPE_ACCUM, K_DIM, H, W, NUM_WORKERS, GTL_A, GTL_B, GTL_C, _K, args...>(i_ref, o_ref);
             // check and cleanup
@@ -218,7 +242,11 @@ void test_generator(test_data &results) {
 void warp::reg::tile::mma::tests(test_data &results) {
     std::cout << "\n ----- Starting ops/warp/register/tile/mma tests! -----\n" << std::endl;
 
+#if !defined(KITTENS_RDNA4)
     test_generator<kittens::ducks::rt_shape::rt_32x32>(results);
+#else
+    std::cout << "Skipping rt_32x32 register MMA tests on RDNA4 (unsupported shape)\n" << std::endl;
+#endif
     test_generator<kittens::ducks::rt_shape::rt_16x16>(results);
 }
 
