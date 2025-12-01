@@ -10,11 +10,164 @@
 
 namespace kittens {
 
+namespace detail {
+#if defined(KITTENS_RDNA4)
+using float_vec8 = float __attribute__((ext_vector_type(8)));
+using short_vec8 = short __attribute__((ext_vector_type(8)));
+using short_vec16 = short __attribute__((ext_vector_type(16)));
+using half_vec8 = __fp16 __attribute__((ext_vector_type(8)));
+using half_vec16 = __fp16 __attribute__((ext_vector_type(16)));
+
+template<typename VecT>
+__device__ __forceinline__ VecT load_packed_vec(const void* src) {
+    VecT v;
+    __builtin_memcpy(&v, src, sizeof(VecT));
+    return v;
+}
+
+template<typename VecT>
+__device__ __forceinline__ void store_packed_vec(void* dst, const VecT& v) {
+    __builtin_memcpy(dst, &v, sizeof(VecT));
+}
+
+template<typename VecT, typename ElemT>
+__device__ __forceinline__ VecT load_packed_vec_segment(const ElemT* base,
+                                                        int offset_elems) {
+    VecT v;
+    __builtin_memcpy(&v,
+                     reinterpret_cast<const char*>(base) + offset_elems * sizeof(ElemT),
+                     sizeof(VecT));
+    return v;
+}
+
+__device__ __forceinline__ void rt_acc_to_wmma_order(float (&vals)[8]) {
+    const unsigned long long mask = 0xFFFFFFFFFFFFFFFFull;
+    const int lane = laneid() & 31;
+    #pragma unroll
+    for(int i = 0; i < 4; ++i) {
+        float send = (lane < 16) ? vals[4 + i] : vals[i];
+        float recv = __shfl_xor_sync(mask, send, 16, 32);
+        if(lane < 16) {
+            vals[4 + i] = recv;
+        } else {
+            vals[i] = recv;
+        }
+    }
+}
+
+__device__ __forceinline__ void wmma_acc_to_rt_order(float (&vals)[8]) {
+    const unsigned long long mask = 0xFFFFFFFFFFFFFFFFull;
+    const int lane = laneid() & 31;
+    #pragma unroll
+    for(int i = 0; i < 4; ++i) {
+        float send = (lane < 16) ? vals[4 + i] : vals[i];
+        float recv = __shfl_xor_sync(mask, send, 16, 32);
+        if(lane < 16) {
+            vals[4 + i] = recv;
+        } else {
+            vals[i] = recv;
+        }
+    }
+}
+
+template<typename FragT, typename ArrayT>
+__device__ __forceinline__ void copy_array_chunk_to_fragment(FragT &frag,
+                                                             const ArrayT &arr,
+                                                             int chunk,
+                                                             int regs_per_chunk) {
+    const auto *base = reinterpret_cast<const char*>(&arr);
+    const size_t offset = static_cast<size_t>(chunk) * regs_per_chunk * sizeof(arr[0]);
+    __builtin_memcpy(&(*frag), base + offset, sizeof(frag));
+}
+#endif
+} // namespace detail
+
+#if defined(KITTENS_RDNA4)
+template<int DRegs, int ARegs, int BRegs>
+__device__ static inline void rdna4_wmma161616(float2 (&D)[DRegs],
+                                               const bf16_2 (&A)[ARegs],
+                                               const bf16_2 (&B)[BRegs],
+                                               const float2 (&C)[DRegs]) {
+    static_assert(sizeof(detail::float_vec8) == sizeof(float2) * DRegs,
+                  "Accumulator register layout must pack eight floats on RDNA4");
+    constexpr size_t vec_bytes = sizeof(detail::short_vec8);
+    constexpr size_t a_bytes = sizeof(bf16_2) * ARegs;
+    constexpr size_t b_bytes = sizeof(bf16_2) * BRegs;
+    static_assert(a_bytes % vec_bytes == 0, "A operand must be multiple of 16 bf16 bits");
+    static_assert(b_bytes % vec_bytes == 0, "B operand must be multiple of 16 bf16 bits");
+    constexpr int segments = a_bytes / vec_bytes;
+    static_assert(segments == b_bytes / vec_bytes, "A/B operand segment mismatch on RDNA4");
+    constexpr int regs_per_segment_a = vec_bytes / sizeof(bf16_2);
+    constexpr int regs_per_segment_b = vec_bytes / sizeof(bf16_2);
+    auto current = detail::load_packed_vec<detail::float_vec8>(C);
+    float acc_vals[8];
+    __builtin_memcpy(acc_vals, &current, sizeof(acc_vals));
+    detail::rt_acc_to_wmma_order(acc_vals);
+    __builtin_memcpy(&current, acc_vals, sizeof(acc_vals));
+    const bf16_2* a_ptr = &A[0];
+    const bf16_2* b_ptr = &B[0];
+    #pragma unroll
+    for(int seg = 0; seg < segments; ++seg) {
+        const int a_offset = seg * regs_per_segment_a;
+        const int b_offset = seg * regs_per_segment_b;
+        detail::short_vec8 a_vec =
+            detail::load_packed_vec_segment<detail::short_vec8>(a_ptr, a_offset);
+        detail::short_vec8 b_vec =
+            detail::load_packed_vec_segment<detail::short_vec8>(b_ptr, b_offset);
+        current = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a_vec, b_vec, current);
+    }
+    float result_vals[8];
+    __builtin_memcpy(result_vals, &current, sizeof(result_vals));
+    detail::wmma_acc_to_rt_order(result_vals);
+    __builtin_memcpy(&current, result_vals, sizeof(result_vals));
+    detail::store_packed_vec(static_cast<void*>(D), current);
+}
+
+template<int DRegs, int ARegs, int BRegs>
+__device__ static inline void rdna4_wmma161616(float2 (&D)[DRegs],
+                                               const half_2 (&A)[ARegs],
+                                               const half_2 (&B)[BRegs],
+                                               const float2 (&C)[DRegs]) {
+    static_assert(sizeof(detail::float_vec8) == sizeof(float2) * DRegs,
+                  "Accumulator register layout must pack eight floats on RDNA4");
+    constexpr size_t vec_bytes = sizeof(detail::half_vec8);
+    constexpr size_t a_bytes = sizeof(half_2) * ARegs;
+    constexpr size_t b_bytes = sizeof(half_2) * BRegs;
+    static_assert(a_bytes % vec_bytes == 0, "A operand must be multiple of 16 half bits");
+    static_assert(b_bytes % vec_bytes == 0, "B operand must be multiple of 16 half bits");
+    constexpr int segments = a_bytes / vec_bytes;
+    static_assert(segments == b_bytes / vec_bytes, "A/B operand segment mismatch on RDNA4");
+    constexpr int regs_per_segment_a = vec_bytes / sizeof(half_2);
+    constexpr int regs_per_segment_b = vec_bytes / sizeof(half_2);
+    auto current = detail::load_packed_vec<detail::float_vec8>(C);
+    float acc_vals[8];
+    __builtin_memcpy(acc_vals, &current, sizeof(acc_vals));
+    detail::rt_acc_to_wmma_order(acc_vals);
+    __builtin_memcpy(&current, acc_vals, sizeof(acc_vals));
+    const half_2* a_ptr = &A[0];
+    const half_2* b_ptr = &B[0];
+    #pragma unroll
+    for(int seg = 0; seg < segments; ++seg) {
+        const int a_offset = seg * regs_per_segment_a;
+        const int b_offset = seg * regs_per_segment_b;
+        detail::half_vec8 a_vec =
+            detail::load_packed_vec_segment<detail::half_vec8>(a_ptr, a_offset);
+        detail::half_vec8 b_vec =
+            detail::load_packed_vec_segment<detail::half_vec8>(b_ptr, b_offset);
+        current = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a_vec, b_vec, current);
+    }
+    float result_vals[8];
+    __builtin_memcpy(result_vals, &current, sizeof(result_vals));
+    detail::wmma_acc_to_rt_order(result_vals);
+    __builtin_memcpy(&current, result_vals, sizeof(result_vals));
+    detail::store_packed_vec(static_cast<void*>(D), current);
+}
+#endif
+
 __device__ static inline void mfma161632(      float2 (&D)[2],
                                          const half_2 (&A)[4],
                                          const half_2 (&B)[4],
                                          const float2 (&C)[2]) {
-    
     typedef __attribute__((__vector_size__(8 * sizeof(__fp16)))) __fp16 fp16x8_t;
     typedef __attribute__((__vector_size__(4 * sizeof(float)))) float floatx4_t;
     *(floatx4_t*)D = __builtin_amdgcn_mfma_f32_16x16x32_f16(
@@ -29,7 +182,6 @@ __device__ static inline void mfma161632(      float2 (&D)[2],
                                          const bf16_2 (&A)[4],
                                          const bf16_2 (&B)[4],
                                          const float2 (&C)[2]) {
-
     typedef __attribute__((__vector_size__(8 * sizeof(__bf16)))) __bf16 bf16x8_t;
     typedef __attribute__((__vector_size__(4 * sizeof(float)))) float floatx4_t;
     *(floatx4_t*)D = __builtin_amdgcn_mfma_f32_16x16x32_bf16(
@@ -39,6 +191,7 @@ __device__ static inline void mfma161632(      float2 (&D)[2],
         0, 0, 0
     );
 }
+
 __device__ static inline void mfma323216(      float2 (&D)[8],
                                          const bf16_2 (&A)[4],
                                          const bf16_2 (&B)[4],
@@ -124,7 +277,6 @@ __device__ static inline void mfma1616128(      float2 (&D)[2],
     )};
 }
 
-
 /**
  * @brief Base matrix multiply-accumulate operation for row layout.
  *
@@ -153,6 +305,14 @@ __device__ static inline void mma_AB_base(rt_base<float, ducks::rt_layout::col, 
     constexpr int B_stride = B_shape::stride;
     static_assert(A_stride == B_stride, "A and B must have the same stride");
     
+#if defined(KITTENS_RDNA4)
+    if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
+                  A_rows == 16 && (A_cols % 16 == 0) &&
+                  B_rows == A_cols && B_cols == 16 &&
+                  std::is_same_v<C_shape, typename ducks::rt_shape::rt_16x16>) {
+        rdna4_wmma161616(d.data, a.data, b.data, c.data);
+    } else
+#endif
     if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> && 
                   A_rows == 16 && A_cols == 32 &&
                   B_rows == 32 && B_cols == 16 &&
@@ -196,6 +356,15 @@ __device__ static inline void mma_ABt_base(rt_base<float, ducks::rt_layout::col,
     constexpr int B_stride = B_shape::stride;
     static_assert(A_stride == B_stride, "A and B must have the same stride");
 
+#if defined(KITTENS_RDNA4)
+    if constexpr ((std::is_same_v<MM_Operand_T, bf16> || std::is_same_v<MM_Operand_T, half>) &&
+                  std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
+                  A_rows == 16 && (A_cols % 16 == 0) &&
+                  B_rows == 16 && (B_cols % 16 == 0) && B_cols == A_cols &&
+                  std::is_same_v<C_shape, typename ducks::rt_shape::rt_16x16>) {
+        rdna4_wmma161616(d.data, a.data, b.data, c.data);
+    } else
+#endif
     if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
                   A_rows == 16 && A_cols == 32 &&
                   B_rows == 16 && B_cols == 32 &&
@@ -249,6 +418,14 @@ __device__ static inline void mma_AtB_base(rt_base<float, ducks::rt_layout::col,
     constexpr int B_stride = B_shape::stride;
     static_assert(A_stride == B_stride, "A and B must have the same stride");
     
+#if defined(KITTENS_RDNA4)
+    if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
+                  A_cols == 16 && (A_rows % 16 == 0) &&
+                  B_rows == 16 && (B_cols % 16 == 0) && B_cols == A_rows &&
+                  std::is_same_v<C_shape, typename ducks::rt_shape::rt_16x16>) {
+        rdna4_wmma161616(d.data, a.data, b.data, c.data);
+    } else
+#endif
     if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> && 
                   A_rows == 32 && A_cols == 16 &&
                   B_rows == 32 && B_cols == 16 &&
@@ -296,6 +473,14 @@ __device__ static inline void mma_AtBt_base(rt_base<float, ducks::rt_layout::col
     constexpr int B_stride = B_shape::stride;
     static_assert(A_stride == B_stride, "A and B must have the same stride");
     
+#if defined(KITTENS_RDNA4)
+    if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
+                  A_cols == 16 && (A_rows % 16 == 0) &&
+                  B_rows == 16 && (B_cols % 16 == 0) && B_cols == A_rows &&
+                  std::is_same_v<C_shape, typename ducks::rt_shape::rt_16x16>) {
+        rdna4_wmma161616(d.data, a.data, b.data, c.data);
+    } else
+#endif
     if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> && 
                   A_rows == 32 && A_cols == 16 &&
                   B_rows == 16 && B_cols == 32 &&
