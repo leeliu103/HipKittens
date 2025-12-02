@@ -7,7 +7,6 @@
 
 #include "../../../../common/common.cuh"
 #include "../../../../types/types.cuh"
-
 namespace kittens {
 
 /* ----------  LAYOUT SWAPS  ---------- */
@@ -39,7 +38,78 @@ __device__ static inline void swap_layout(rt<T, _height, _width, layout1, shape1
                 for (int i = 0; i < dst.height; i++) {
                     #pragma unroll
                     for (int j = 0; j < dst.width; j++) {
+#if defined(KITTENS_RDNA4) || !defined(__HIP_DEVICE_COMPILE__)
+                        auto shuffle_based_swap = [&](auto &&fetch_partner_bits) {
+                            static_assert(WARP_THREADS == 32, "swap_layout shuffle path currently supports wave32 only");
+                            const int lane = laneid();
+                            const bool lane_has_low_rows = (lane & 16) == 0;
 
+                            auto scatter_halves = [&](auto &dst_tile, bf16_2 (&low)[4], bf16_2 (&high)[4]) {
+                                dst_tile.data[0] = low[0];
+                                dst_tile.data[1] = low[1];
+                                dst_tile.data[2] = high[0];
+                                dst_tile.data[3] = high[1];
+                                dst_tile.data[4] = low[2];
+                                dst_tile.data[5] = low[3];
+                                dst_tile.data[6] = high[2];
+                                dst_tile.data[7] = high[3];
+                            };
+
+                            auto transform_tile = [&](const auto &tile, bf16_2 (&low)[4], bf16_2 (&high)[4]) {
+                                #pragma unroll
+                                for (int k = 0; k < 4; ++k) {
+                                    bf16_2 self_val = tile.data[k];
+                                    uint32_t self_bits;
+                                    __builtin_memcpy(&self_bits, &self_val, sizeof(self_bits));
+                                    uint32_t partner_bits = fetch_partner_bits(lane, self_bits);
+                                    bf16_2 partner_val;
+                                    __builtin_memcpy(&partner_val, &partner_bits, sizeof(partner_val));
+
+                                    if (lane_has_low_rows) {
+                                        low[k] = self_val;
+                                        high[k] = partner_val;
+                                    } else {
+                                        low[k] = partner_val;
+                                        high[k] = self_val;
+                                    }
+                                }
+                            };
+
+                            bf16_2 tile0_low[4], tile0_high[4];
+                            bf16_2 tile1_low[4], tile1_high[4];
+                            transform_tile(src.tiles[i][j * 2], tile0_low, tile0_high);
+                            transform_tile(src.tiles[i][j * 2 + 1], tile1_low, tile1_high);
+
+                            if (lane_has_low_rows) {
+                                scatter_halves(dst.tiles[i][j], tile0_low, tile0_high);
+                            } else {
+                                scatter_halves(dst.tiles[i][j], tile1_low, tile1_high);
+                            }
+                        };
+#endif
+#if defined(__HIP_DEVICE_COMPILE__)
+#if defined(KITTENS_RDNA4)
+                        constexpr uint32_t low_lane_selector  = 0x76543210u;
+                        constexpr uint32_t high_lane_selector = 0xfedcba98u;
+                        auto fetch_partner_bits = [&](int lane, uint32_t bits) {
+                            constexpr bool fetch_inactive = true;
+                            constexpr bool bound_ctrl = false;
+                            uint32_t permuted = __builtin_amdgcn_permlanex16(
+                                0u,
+                                bits,
+                                low_lane_selector,
+                                high_lane_selector,
+                                fetch_inactive,
+                                bound_ctrl);
+                            const int partner_lane = lane ^ 16;
+                            unsigned long long active_mask = __ballot_sync(0xffffffffffffffffull, true);
+                            if (((active_mask >> partner_lane) & 1ull) == 0ull) {
+                                return static_cast<uint32_t>(__builtin_amdgcn_readlane(static_cast<int>(bits), partner_lane));
+                            }
+                            return permuted;
+                        };
+                        shuffle_based_swap(fetch_partner_bits);
+#else
                         // now we are at the granularity of a single 16x32 tile in dst.
                         // V_PERMLANE16_SWAP_B32:
                         // Swap data between two vector registers. Odd rows of the first operand are swapped with even rows of the
@@ -50,6 +120,15 @@ __device__ static inline void swap_layout(rt<T, _height, _width, layout1, shape1
                             *reinterpret_cast<uint32_t *>(&dst.tiles[i][j].data[k]) = res.x;
                             *reinterpret_cast<uint32_t *>(&dst.tiles[i][j].data[k + 2]) = res.y;
                         }
+#endif
+#else
+                        auto fetch_partner_bits = [&](int lane, uint32_t bits) {
+                            const int partner_lane = lane ^ 16;
+                            int partner_bits = __shfl(static_cast<int>(bits), partner_lane, WARP_THREADS);
+                            return static_cast<uint32_t>(partner_bits);
+                        };
+                        shuffle_based_swap(fetch_partner_bits);
+#endif
                     }
                 }
             } else if constexpr (std::is_same_v<shape1, typename ducks::rt_shape::rt_16x32_4> && std::is_same_v<shape2, typename ducks::rt_shape::rt_32x32>) {
@@ -189,6 +268,8 @@ __device__ static inline void make_causal(RT &dst, const RT &src, const typename
     const typename RT::dtype packed_val = base_types::packing<typename RT::dtype>::pack(val);
 
     int lane = laneid();
+    const int lane_row = RT::base_tile_stride * (lane / RT::base_tile_cols);
+    const int lane_col = lane % RT::base_tile_cols;
     #pragma unroll
     for(int i = 0; i < dst.height; i++) {
         #pragma unroll
@@ -206,55 +287,25 @@ __device__ static inline void make_causal(RT &dst, const RT &src, const typename
                 }
             }
             else { // on the diagonal, interesting!
+                #pragma unroll
+                for(int k = 0; k < dst.packed_per_base_tile; k++) {
+                    const int stride_idx = k / RT::base_tile_packed_per_stride;
+                    const int inner_stride_idx = k % RT::base_tile_packed_per_stride;
+                    const int global_row_idx_x = (i * dst.base_tile_rows) + lane_row + (stride_idx * RT::base_tile_elements_per_stride_group) + (inner_stride_idx * RT::num_packed);
+                    const int global_row_idx_y = global_row_idx_x + 1;
+                    const int global_col_idx   = (j * dst.base_tile_cols) + lane_col;
 
-                if constexpr (std::is_same_v<typename RT::shape, typename ducks::rt_shape::rt_16x16>) {
-                    constexpr uint64_t MASKS[4] = {0x1FFF01FF001F0001, 
-                                                   0x3FFF03FF003F0003, 
-                                                   0x7FFF07FF007F0007, 
-                                                   0xFFFF0FFF00FF000F};
-
-                    #pragma unroll
-                    for(int k = 0; k < dst.packed_per_base_tile; k++) {
-                        if ((MASKS[k * 2] >> lane) & 1) {
-                            dst.tiles[i][j].data[k].x = src.tiles[i][j].data[k].x;
-                        }
-                        else {
-                            dst.tiles[i][j].data[k].x = val;
-                        }
-                        if ((MASKS[k * 2 + 1] >> lane) & 1) {
-                            dst.tiles[i][j].data[k].y = src.tiles[i][j].data[k].y;
-                        }
-                        else {
-                            dst.tiles[i][j].data[k].y = val;
-                        }
+                    if (global_col_idx <= global_row_idx_x) {
+                        dst.tiles[i][j].data[k].x = src.tiles[i][j].data[k].x;
+                    } else {
+                        dst.tiles[i][j].data[k].x = val;
                     }
-                } else if constexpr (std::is_same_v<typename RT::shape, typename ducks::rt_shape::rt_32x32>) {
-                    constexpr uint64_t MASKS[16] = {0x0000001F00000001, 0x0000003F00000003,
-                                                    0x0000007F00000007, 0x000000FF0000000F,
-                                                    0x00001FFF000001FF, 0x00003FFF000003FF,
-                                                    0x00007FFF000007FF, 0x0000FFFF00000FFF,
-                                                    0x001FFFFF0001FFFF, 0x003FFFFF0003FFFF,
-                                                    0x007FFFFF0007FFFF, 0x00FFFFFF000FFFFF,
-                                                    0x1FFFFFFF01FFFFFF, 0x3FFFFFFF03FFFFFF,
-                                                    0x7FFFFFFF07FFFFFF, 0xFFFFFFFF0FFFFFFF};
 
-                    #pragma unroll
-                    for(int k = 0; k < dst.packed_per_base_tile; k++) {
-                        if ((MASKS[k * 2] >> lane) & 1) {
-                            dst.tiles[i][j].data[k].x = src.tiles[i][j].data[k].x;
-                        }
-                        else {
-                            dst.tiles[i][j].data[k].x = val;
-                        }
-                        if ((MASKS[k * 2 + 1] >> lane) & 1) {
-                            dst.tiles[i][j].data[k].y = src.tiles[i][j].data[k].y;
-                        }
-                        else {
-                            dst.tiles[i][j].data[k].y = val;
-                        }
+                    if (global_col_idx <= global_row_idx_y) {
+                        dst.tiles[i][j].data[k].y = src.tiles[i][j].data[k].y;
+                    } else {
+                        dst.tiles[i][j].data[k].y = val;
                     }
-                } else {
-                    static_assert(false, "Unsupported shape");
                 }
             }
         }
