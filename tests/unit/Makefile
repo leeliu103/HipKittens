@@ -2,7 +2,7 @@
 # If you want to run lots of tests without parallel compilation, be prepared
 # to spend a *long* time compiling. (like, HOURS single-threaded.)
 
-# GPU Selection: Set to MI300X
+# GPU Selection: set GPU_TARGET to match your GPU (CDNA2/3/4, RDNA3/4, etc.)
 GPU_TARGET=CDNA4
 COMP_LEVEL=profile
 
@@ -42,6 +42,8 @@ else ifeq ($(GPU_TARGET),CDNA3)
 HIPFLAGS+= -DKITTENS_CDNA3 --offload-arch=gfx942
 else ifeq ($(GPU_TARGET),CDNA4)
 HIPFLAGS+= --offload-arch=gfx950 -DHIP_ENABLE_WARP_SYNC_BUILTINS
+else ifeq ($(GPU_TARGET),RDNA4)
+HIPFLAGS+= -DKITTENS_RDNA4 --offload-arch=gfx1201
 endif
 # -DKITTENS_CDNA4 
 

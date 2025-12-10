@@ -55,6 +55,7 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
             const int swizzled_global_col = (swizzled_shared_byte_offset % ST::underlying_subtile_row_bytes) / sizeof(T) + subtile_col * ST::underlying_subtile_cols;
             const uint32_t swizzled_global_byte_offset = (swizzled_global_row * row_stride + swizzled_global_col) * sizeof(T);
 
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
             uintptr_t lds_addr = lds_base + (i * num_warps * bytes_per_warp);
             as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
 
@@ -66,6 +67,13 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
                 0, 
                 0, // instruction offset
                 static_cast<int>(coherency::cache_all)); // cache coherency
+#else
+            const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(global_ptr);
+            uint8_t* shared_bytes = reinterpret_cast<uint8_t*>(&dst.data[0]);
+            uint8_t* shared_lane_ptr = shared_bytes + lane_byte_offset;
+            const uint8_t* global_lane_ptr = global_bytes + swizzled_global_byte_offset;
+            __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+#endif
         }
     }
     // there are leftover loads that need to be handled here
@@ -91,6 +99,7 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
             const int swizzled_global_col = (swizzled_shared_byte_offset % ST::underlying_subtile_row_bytes) / sizeof(T) + subtile_col * ST::underlying_subtile_cols;
             const uint32_t swizzled_global_byte_offset = (swizzled_global_row * row_stride + swizzled_global_col) * sizeof(T);
 
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
             uintptr_t lds_addr = lds_base + (memcpy_per_tile * num_warps * bytes_per_warp);
             as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
 
@@ -102,6 +111,13 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx)
                 0, 
                 0, // instruction offset
                 static_cast<int>(coherency::cache_all)); // cache coherency
+#else
+            const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(global_ptr);
+            uint8_t* shared_bytes = reinterpret_cast<uint8_t*>(&dst.data[0]);
+            uint8_t* shared_lane_ptr = shared_bytes + lane_byte_offset;
+            const uint8_t* global_lane_ptr = global_bytes + swizzled_global_byte_offset;
+            __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+#endif
         }
     }
 }
@@ -202,7 +218,7 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx, const uint
 
     #pragma unroll
     for (int i = 0; i < memcpy_per_tile; i++) {
-
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
         const T* lds_elem_ptr = lds_base + (i * num_warps * elements_per_warp);
         uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
         as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
@@ -215,6 +231,13 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx, const uint
             0, 
             0, // instruction offset
             static_cast<int>(coherency::cache_all)); // cache coherency
+#else
+        const T* lds_elem_ptr = lds_base + (i * num_warps * elements_per_warp);
+        const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(global_ptr);
+        uint8_t* shared_lane_ptr = reinterpret_cast<uint8_t*>(lds_elem_ptr) + kittens::laneid() * bytes_per_thread;
+        const uint8_t* global_lane_ptr = global_bytes + swizzled_offsets[i];
+        __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+#endif
     }
 
     // there are leftover loads that need to be handled here
@@ -226,6 +249,7 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx, const uint
 
         if (warpid < leftover_warps) {
 
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
             uintptr_t lds_addr = lds_base + (memcpy_per_tile * num_warps * bytes_per_warp);
             as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
 
@@ -237,6 +261,13 @@ __device__ inline void load(ST& dst, const GL& src, const COORD& idx, const uint
                 0, 
                 0, // instruction offset
                 static_cast<int>(coherency::cache_all)); // cache coherency
+#else
+            const T* lds_elem_ptr = lds_base + (memcpy_per_tile * num_warps * elements_per_warp);
+            const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(global_ptr);
+            uint8_t* shared_lane_ptr = reinterpret_cast<uint8_t*>(lds_elem_ptr) + kittens::laneid() * bytes_per_thread;
+            const uint8_t* global_lane_ptr = global_bytes + swizzled_offsets[memcpy_per_tile];
+            __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+#endif
         }
     }
 }
@@ -261,6 +292,7 @@ __device__ __forceinline__ void load(ST& dst, const GL& src, const COORD& idx,
                                 i32x4 SRD,
                                 const void* base_ptr, const uint32_t lds_base)
 {
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
     using T = typename ST::dtype;
     static_assert(sizeof(T) == 2 || sizeof(T) == 1, "only supporting 16 and 8-bit dtypes");
 
@@ -310,6 +342,9 @@ __device__ __forceinline__ void load(ST& dst, const GL& src, const COORD& idx,
         // SGPR bump (compiler emits s_add_u32)
         lds_cur += bytes_per_memcpy;
     }
+#else
+    load<axis, assume_aligned, ST, GL, COORD, N_THREADS>(dst, src, idx, swizzled_offsets);
+#endif
 }
 template<ducks::st::all ST, ducks::gl::all GL, ducks::coord::tile COORD=coord<ST>>
 __device__ static inline void load(ST &dst, const GL &src, const COORD &idx, const uint32_t* __restrict__ swizzled_offsets, i32x4 srd, const void* base_ptr, uint32_t lds_base) {

@@ -44,6 +44,7 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
             const int warp_offset = warpid + i * num_warps;
             const int lane_byte_offset = warp_offset * bytes_per_warp + laneid * bytes_per_thread;
 
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
             const T* lds_elem_ptr = lds_base + (i * num_warps * elem_per_warp);
 
             uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
@@ -57,6 +58,13 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
                 0,
                 0,
                 static_cast<int>(coherency::cache_all));
+#else
+            const T* lds_elem_ptr = lds_base + (i * num_warps * elem_per_warp);
+            const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(src_ptr);
+            uint8_t* shared_lane_ptr = reinterpret_cast<uint8_t*>(lds_elem_ptr) + laneid * bytes_per_thread;
+            const uint8_t* global_lane_ptr = global_bytes + lane_byte_offset;
+            __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+#endif
         }
     }
 
@@ -69,6 +77,7 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
             const int warp_offset = warpid + num_memcpys * num_warps;
             const int lane_byte_offset = warp_offset * bytes_per_warp + laneid * bytes_per_thread;
 
+#if KITTENS_HAS_RAW_BUFFER_LOAD_LDS
             const T* lds_elem_ptr = lds_base + (num_memcpys * num_warps * elem_per_warp);
             uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
             as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
@@ -81,6 +90,13 @@ __device__ static inline void load(SV &dst, const GL &src, const COORD &idx) {
                 0,
                 0,
                 static_cast<int>(coherency::cache_all));
+#else
+            const T* lds_elem_ptr = lds_base + (num_memcpys * num_warps * elem_per_warp);
+            const uint8_t* global_bytes = reinterpret_cast<const uint8_t*>(src_ptr);
+            uint8_t* shared_lane_ptr = reinterpret_cast<uint8_t*>(lds_elem_ptr) + laneid * bytes_per_thread;
+            const uint8_t* global_lane_ptr = global_bytes + lane_byte_offset;
+            __builtin_memcpy(shared_lane_ptr, global_lane_ptr, bytes_per_thread);
+#endif
         }
     }
 }

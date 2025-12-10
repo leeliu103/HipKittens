@@ -18,6 +18,14 @@
 #define __forceinline__ __attribute__((always_inline))
 #endif
 
+#ifndef KITTENS_HAS_RAW_BUFFER_LOAD_LDS
+#if defined(KITTENS_RDNA4)
+#define KITTENS_HAS_RAW_BUFFER_LOAD_LDS 0
+#else
+#define KITTENS_HAS_RAW_BUFFER_LOAD_LDS 1
+#endif
+#endif
+
 /**
  * @namespace kittens
  *
