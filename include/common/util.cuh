@@ -119,7 +119,11 @@ __host__ __device__ inline int ceil_div(int a, int b) {
 }
 
 
-constexpr int MAX_SHARED_MEMORY = 160000;
+#if defined(KITTENS_RDNA4)
+constexpr int MAX_SHARED_MEMORY = 131072; // 128KB for RDNA4 WGP
+#else
+constexpr int MAX_SHARED_MEMORY = 160000; // 160KB for CDNA
+#endif
 constexpr int NUM_XCDS = 8;
 constexpr int CUS_PER_XCD = 32;
 constexpr int NUM_CUS = CUS_PER_XCD * NUM_XCDS;
